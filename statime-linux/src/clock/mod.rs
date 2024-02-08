@@ -85,6 +85,7 @@ impl Clock for LinuxClock {
         use clock_steering::Clock;
         log::trace!("Setting clock frequency to {:e}ppm", freq);
         let timestamp = if self.is_tai {
+            log::info!("setting frequency of CLOCK_REALTIME");
             // Clock tai can't directly adjust frequency, so drive this through
             // clock_realtime and adjust the received timestamp
             let mut ts = UnixClock::CLOCK_REALTIME.set_frequency(freq)?;
@@ -118,7 +119,11 @@ impl Clock for LinuxClock {
         let timestamp = if self.is_tai {
             // Clock tai can't directly step, so drive this through clock_realtime
             // and adjust the received timestamp
-            let mut ts = UnixClock::CLOCK_REALTIME.step_clock(offset)?;
+            log::info!("stepping CLOCK_REALTIME");
+            let mut ts = UnixClock::CLOCK_REALTIME.step_clock(offset).map_err(|e| {
+                log::warn!("CLOCK_REALTIME step failed: {e:?}");
+                e
+            })?;
             ts.seconds += UnixClock::CLOCK_REALTIME.get_tai()? as libc::time_t;
             ts
         } else {

@@ -600,6 +600,8 @@ impl KalmanFilter {
             } else {
                 log::error!("Could not adjust clock frequency");
             }
+        } else {
+            log::warn!("cur_frequency empty, can't change_frequency");
         }
     }
 
@@ -608,6 +610,8 @@ impl KalmanFilter {
             log::info!("Stepped clock by {}s", -offset);
             self.running_filter.absorb_offset_steer(-offset);
             self.wander_filter.absorb_offset_steer(-offset);
+        } else {
+            log::warn!("stepping clock failed");
         }
     }
 

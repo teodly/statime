@@ -1,39 +1,32 @@
-//! Ptp network messages
+//! PTPv1 network messages
 
-pub(crate) use announce::*;
-pub(crate) use delay_req::*;
+pub(crate) use sync_or_delay_req::*;
 pub(crate) use delay_resp::*;
 pub(crate) use follow_up::*;
 pub use header::*;
-pub(crate) use sync::*;
 
-use self::{
-    management::ManagementMessage, p_delay_req::PDelayReqMessage, p_delay_resp::PDelayRespMessage,
-    p_delay_resp_follow_up::PDelayRespFollowUpMessage, signalling::SignalingMessage,
-};
+
+use super::messages::EnumConversionError;
+
+
+/* use self::{
+    management::ManagementMessage,
+}; */
 use super::{
-    common::{PortIdentity, TimeInterval, TlvSet, WireTimestamp},
-    datasets::DefaultDS,
     WireFormatError,
 };
-use crate::{
-    config::LeapIndicator,
-    ptp_instance::PtpInstanceState,
-    time::{Interval, Time},
-};
+use crate::config::ClockIdentity;
 
-mod announce;
+
+mod sync_or_delay_req;
 mod control_field;
-mod delay_req;
+use control_field::ControlField;
 mod delay_resp;
 mod follow_up;
 mod header;
-mod management;
-mod p_delay_req;
-mod p_delay_resp;
-mod p_delay_resp_follow_up;
-mod signalling;
-mod sync;
+
+pub mod converter;
+
 
 /// Maximum length of a packet
 ///
@@ -41,40 +34,27 @@ mod sync;
 /// `statime`.
 pub const MAX_DATA_LEN: usize = 255;
 
+/// Type of message, used to differentiate low-delay and other messages.
+/// `Event` is low-delay.
+/// 
+/// To avoid confusion with PTPv2 MessageType which is equivalent to ControlField
+/// in PTPv1, PTPv1's messageType is called here PortType
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
-pub enum MessageType {
-    Sync = 0x0,
-    DelayReq = 0x1,
-    PDelayReq = 0x2,
-    PDelayResp = 0x3,
-    FollowUp = 0x8,
-    DelayResp = 0x9,
-    PDelayRespFollowUp = 0xa,
-    Announce = 0xb,
-    Signaling = 0xc,
-    Management = 0xd,
+pub enum PortType {
+    Event = 0x1,
+    General = 0x2,
 }
 
-pub struct EnumConversionError(pub u8);
-
-impl TryFrom<u8> for MessageType {
+impl TryFrom<u8> for PortType {
     type Error = EnumConversionError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        use MessageType::*;
+        use PortType::*;
 
         match value {
-            0x0 => Ok(Sync),
-            0x1 => Ok(DelayReq),
-            0x2 => Ok(PDelayReq),
-            0x3 => Ok(PDelayResp),
-            0x8 => Ok(FollowUp),
-            0x9 => Ok(DelayResp),
-            0xa => Ok(PDelayRespFollowUp),
-            0xb => Ok(Announce),
-            0xc => Ok(Signaling),
-            0xd => Ok(Management),
+            0x1 => Ok(Event),
+            0x2 => Ok(General),
             _ => Err(EnumConversionError(value)),
         }
     }
@@ -115,23 +95,17 @@ mod fuzz {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Message<'a> {
+pub(crate) struct Message {
     pub(crate) header: Header,
     pub(crate) body: MessageBody,
-    pub(crate) suffix: TlvSet<'a>,
 }
 
-impl<'a> Message<'a> {
+impl Message {
     pub(crate) fn is_event(&self) -> bool {
         use MessageBody::*;
         match self.body {
-            Sync(_) | DelayReq(_) | PDelayReq(_) | PDelayResp(_) => true,
-            FollowUp(_)
-            | DelayResp(_)
-            | PDelayRespFollowUp(_)
-            | Announce(_)
-            | Signaling(_)
-            | Management(_) => false,
+            Sync(_) | DelayReq(_) => true,
+            FollowUp(_) | DelayResp(_) /* | Management(_) */ => false,
         }
     }
 }
@@ -140,14 +114,9 @@ impl<'a> Message<'a> {
 pub(crate) enum MessageBody {
     Sync(SyncMessage),
     DelayReq(DelayReqMessage),
-    PDelayReq(PDelayReqMessage),
-    PDelayResp(PDelayRespMessage),
     FollowUp(FollowUpMessage),
     DelayResp(DelayRespMessage),
-    PDelayRespFollowUp(PDelayRespFollowUpMessage),
-    Announce(AnnounceMessage),
-    Signaling(SignalingMessage),
-    Management(ManagementMessage),
+    //Management(ManagementMessage), // TODO
 }
 
 impl MessageBody {
@@ -155,29 +124,19 @@ impl MessageBody {
         match &self {
             MessageBody::Sync(m) => m.content_size(),
             MessageBody::DelayReq(m) => m.content_size(),
-            MessageBody::PDelayReq(m) => m.content_size(),
-            MessageBody::PDelayResp(m) => m.content_size(),
             MessageBody::FollowUp(m) => m.content_size(),
             MessageBody::DelayResp(m) => m.content_size(),
-            MessageBody::PDelayRespFollowUp(m) => m.content_size(),
-            MessageBody::Announce(m) => m.content_size(),
-            MessageBody::Signaling(m) => m.content_size(),
-            MessageBody::Management(m) => m.content_size(),
+            /* MessageBody::Management(m) => m.content_size(), */
         }
     }
 
-    fn content_type(&self) -> MessageType {
+    fn content_type(&self) -> ControlField {
         match self {
-            MessageBody::Sync(_) => MessageType::Sync,
-            MessageBody::DelayReq(_) => MessageType::DelayReq,
-            MessageBody::PDelayReq(_) => MessageType::PDelayReq,
-            MessageBody::PDelayResp(_) => MessageType::PDelayResp,
-            MessageBody::FollowUp(_) => MessageType::FollowUp,
-            MessageBody::DelayResp(_) => MessageType::DelayResp,
-            MessageBody::PDelayRespFollowUp(_) => MessageType::PDelayRespFollowUp,
-            MessageBody::Announce(_) => MessageType::Announce,
-            MessageBody::Signaling(_) => MessageType::Signaling,
-            MessageBody::Management(_) => MessageType::Management,
+            MessageBody::Sync(_) => ControlField::Sync,
+            MessageBody::DelayReq(_) => ControlField::DelayReq,
+            MessageBody::FollowUp(_) => ControlField::FollowUp,
+            MessageBody::DelayResp(_) => ControlField::DelayResp,
+            /* MessageBody::Management(_) => MessageType::Management, */
         }
     }
 
@@ -185,110 +144,131 @@ impl MessageBody {
         match &self {
             MessageBody::Sync(m) => m.serialize_content(buffer)?,
             MessageBody::DelayReq(m) => m.serialize_content(buffer)?,
-            MessageBody::PDelayReq(m) => m.serialize_content(buffer)?,
-            MessageBody::PDelayResp(m) => m.serialize_content(buffer)?,
             MessageBody::FollowUp(m) => m.serialize_content(buffer)?,
             MessageBody::DelayResp(m) => m.serialize_content(buffer)?,
-            MessageBody::PDelayRespFollowUp(m) => m.serialize_content(buffer)?,
-            MessageBody::Announce(m) => m.serialize_content(buffer)?,
-            MessageBody::Signaling(m) => m.serialize_content(buffer)?,
-            MessageBody::Management(m) => m.serialize_content(buffer)?,
+            /* MessageBody::Management(m) => m.serialize_content(buffer)?, */
         }
 
         Ok(self.wire_size())
     }
 
     pub(crate) fn deserialize(
-        message_type: MessageType,
-        header: &Header,
+        message_type: ControlField,
+        _header: &Header,
         buffer: &[u8],
     ) -> Result<Self, super::WireFormatError> {
         let body = match message_type {
-            MessageType::Sync => MessageBody::Sync(SyncMessage::deserialize_content(buffer)?),
-            MessageType::DelayReq => {
+            ControlField::Sync => MessageBody::Sync(SyncMessage::deserialize_content(buffer)?),
+            ControlField::DelayReq => {
                 MessageBody::DelayReq(DelayReqMessage::deserialize_content(buffer)?)
             }
-            MessageType::PDelayReq => {
-                MessageBody::PDelayReq(PDelayReqMessage::deserialize_content(buffer)?)
-            }
-            MessageType::PDelayResp => {
-                MessageBody::PDelayResp(PDelayRespMessage::deserialize_content(buffer)?)
-            }
-            MessageType::FollowUp => {
+            ControlField::FollowUp => {
                 MessageBody::FollowUp(FollowUpMessage::deserialize_content(buffer)?)
             }
-            MessageType::DelayResp => {
+            ControlField::DelayResp => {
                 MessageBody::DelayResp(DelayRespMessage::deserialize_content(buffer)?)
             }
-            MessageType::PDelayRespFollowUp => MessageBody::PDelayRespFollowUp(
-                PDelayRespFollowUpMessage::deserialize_content(buffer)?,
-            ),
-            MessageType::Announce => {
-                MessageBody::Announce(AnnounceMessage::deserialize_content(*header, buffer)?)
-            }
-            MessageType::Signaling => {
-                MessageBody::Signaling(SignalingMessage::deserialize_content(buffer)?)
-            }
-            MessageType::Management => {
+            /* ControlField::Management => {
                 MessageBody::Management(ManagementMessage::deserialize_content(buffer)?)
-            }
+            } */
         };
 
         Ok(body)
     }
 }
 
+fn v2_clock_identity_to_v1_clock_uuid(identity: &ClockIdentity) -> [u8; 6] {
+    identity.0[0..6].try_into().unwrap()
+    // XXX: this is correct only if clock identity is synthesized by right-padding mac address with zeros as in statime-linux
+}
+/* 
+fn grandmaster_properties_from_parent_ds(ds: &ParentDS) -> GrandmasterPropertiesV1 {
+    GrandmasterPropertiesV1 {
+        communication_technology: 1,
+        clock_uuid: v2_clock_identity_to_v1_clock_uuid(&ds.grandmaster_identity),
+        port_id: 0, // FIXME
+        sequence_id: 0, // FIXME
+        clock_stratum: ds.grandmaster_clock_quality.clock_class,
+        clock_identifier: [b'D', b'F', b'L', b'T'], // FIXME
+        clock_variance: 0, // ??? FIXME
+        preferred: ds.grandmaster_priority_1 > 128,
+        is_boundary_clock: true // ??? FIXME
+    }
+}
+
 fn base_header(default_ds: &DefaultDS, port_identity: PortIdentity, sequence_id: u16) -> Header {
     Header {
-        sdo_id: default_ds.sdo_id,
-        domain_number: default_ds.domain_number,
-        source_port_identity: port_identity,
+        // TODO subdomain
+        source_uuid: v2_clock_identity_to_v1_clock_uuid(&port_identity.clock_identity),
+        source_port_id: port_identity.port_number,
         sequence_id,
         ..Default::default()
     }
 }
 
-impl Message<'_> {
+fn sync_or_delay_req(global: &PtpInstanceState) -> SyncOrDelayReqMessage {
+    let time_properties_ds = &global.time_properties_ds;
+    SyncOrDelayReqMessage {
+        origin_timestamp: Default::default(),
+        epoch_number: 0,
+        current_utc_offset: time_properties_ds.current_utc_offset.unwrap_or(0),
+        grandmaster: grandmaster_properties_from_parent_ds(&global.parent_ds),
+        sync_interval: -2,
+        local_clock_variance: global.default_ds.clock_quality.offset_scaled_log_variance as i16, // ???
+        local_steps_removed: global.current_ds.steps_removed,
+        local_clock_stratum: global.default_ds.clock_quality.clock_class,
+        local_clock_identifier: [b'D', b'F', b'L', b'T'], // TODO
+        parent_communication_technology: 1,
+        parent_uuid: v2_clock_identity_to_v1_clock_uuid(&global.parent_ds.parent_port_identity.clock_identity),
+        parent_port_field: global.parent_ds.parent_port_identity.port_number,
+        estimated_master_variance: global.parent_ds.observed_parent_offset_scaled_log_variance as i16, // ???
+        estimated_master_drift: global.parent_ds.observed_parent_clock_phase_change_rate as i32, // ???
+        utc_reasonable: time_properties_ds.current_utc_offset.is_some()
+    }
+}
+
+impl Message {
     pub(crate) fn sync(
-        default_ds: &DefaultDS,
+        global: &PtpInstanceState,
         port_identity: PortIdentity,
         sequence_id: u16,
     ) -> Self {
+        let time_properties_ds = &global.time_properties_ds;
+
         let header = Header {
-            two_step_flag: true,
-            ..base_header(default_ds, port_identity, sequence_id)
+            leap59: time_properties_ds.leap_indicator == LeapIndicator::Leap59,
+            leap61: time_properties_ds.leap_indicator == LeapIndicator::Leap61,
+            ptp_assist: true,
+            ptp_boundary_clock: true, // assume that we're a boundary clock if we're a master, TODO is it correct?
+            ..base_header(&global.default_ds, port_identity, sequence_id)
         };
 
         Message {
             header,
-            body: MessageBody::Sync(SyncMessage {
-                origin_timestamp: Default::default(),
-            }),
-            suffix: TlvSet::default(),
+            body: MessageBody::Sync(sync_or_delay_req(&global)),
         }
     }
 
     pub(crate) fn follow_up(
-        default_ds: &DefaultDS,
+        global: &PtpInstanceState,
         port_identity: PortIdentity,
         sequence_id: u16,
         timestamp: Time,
     ) -> Self {
         let header = Header {
-            correction_field: timestamp.subnano(),
-            ..base_header(default_ds, port_identity, sequence_id)
+            ..base_header(&global.default_ds, port_identity, sequence_id)
         };
 
         Message {
             header,
             body: MessageBody::FollowUp(FollowUpMessage {
+                associated_sequence_id: sequence_id,
                 precise_origin_timestamp: timestamp.into(),
             }),
-            suffix: TlvSet::default(),
         }
     }
 
-    pub(crate) fn announce(
+/*     pub(crate) fn _announce(
         global: &PtpInstanceState,
         port_identity: PortIdentity,
         sequence_id: u16,
@@ -320,90 +300,88 @@ impl Message<'_> {
         Message {
             header,
             body,
-            suffix: TlvSet::default(),
         }
-    }
+    } */
 
     pub(crate) fn delay_req(
+        global: &PtpInstanceState,
         default_ds: &DefaultDS,
         port_identity: PortIdentity,
         sequence_id: u16,
     ) -> Self {
         let header = Header {
-            log_message_interval: 0x7f,
             ..base_header(default_ds, port_identity, sequence_id)
         };
 
         Message {
             header,
-            body: MessageBody::DelayReq(DelayReqMessage {
-                origin_timestamp: WireTimestamp::default(),
-            }),
-            suffix: TlvSet::default(),
+            body: MessageBody::DelayReq(sync_or_delay_req(&global)),
         }
     }
 
     pub(crate) fn delay_resp(
+        global: &PtpInstanceState,
         request_header: Header,
         request: DelayReqMessage,
         port_identity: PortIdentity,
+        sequence_id: u16,
         min_delay_req_interval: Interval,
         timestamp: Time,
     ) -> Self {
+        let time_properties_ds = &global.time_properties_ds;
         // TODO is it really correct that we don't use any of the data?
         let _ = request;
 
         let header = Header {
-            two_step_flag: false,
-            source_port_identity: port_identity,
-            correction_field: TimeInterval(
-                request_header.correction_field.0 + timestamp.subnano().0,
-            ),
-            log_message_interval: min_delay_req_interval.as_log_2(),
-            ..request_header
+            leap59: time_properties_ds.leap_indicator == LeapIndicator::Leap59,
+            leap61: time_properties_ds.leap_indicator == LeapIndicator::Leap61,
+            ptp_assist: true,
+            ptp_boundary_clock: true, // assume that we're a boundary clock if we're a master, TODO is it correct?
+            ..base_header(&global.default_ds, port_identity, sequence_id)
         };
 
         let body = MessageBody::DelayResp(DelayRespMessage {
             receive_timestamp: timestamp.into(),
-            requesting_port_identity: request_header.source_port_identity,
+            requesting_source_communication_technology: 1,
+            requesting_source_uuid: request_header.source_uuid,
+            requesting_source_port_id: request_header.source_port_id,
+            requesting_source_sequence_id: request_header.sequence_id
         });
 
         Message {
             header,
             body,
-            suffix: TlvSet::default(),
         }
     }
 }
+ */
 
-impl<'a> Message<'a> {
+impl Message {
     pub(crate) fn header(&self) -> &Header {
         &self.header
     }
 
     /// The byte size on the wire of this message
     pub(crate) fn wire_size(&self) -> usize {
-        self.header.wire_size() + self.body.wire_size() + self.suffix.wire_size()
+        self.header.wire_size() + self.body.wire_size()
     }
 
     /// Serializes the object into the PTP wire format.
     ///
     /// Returns the used buffer size that contains the message or an error.
     pub(crate) fn serialize(&self, buffer: &mut [u8]) -> Result<usize, super::WireFormatError> {
-        let (header, rest) = buffer.split_at_mut(34);
-        let (body, tlv) = rest.split_at_mut(self.body.wire_size());
+        let (header, rest) = buffer.split_at_mut(40);
+        let (body, _tlv) = rest.split_at_mut(self.body.wire_size());
 
         self.header
             .serialize_header(
                 self.body.content_type(),
-                self.body.wire_size() + self.suffix.wire_size(),
+                self.body.wire_size(),
                 header,
             )
             .unwrap();
 
         self.body.serialize(body).unwrap();
-
-        self.suffix.serialize(tlv).unwrap();
 
         Ok(self.wire_size())
     }
@@ -411,34 +389,28 @@ impl<'a> Message<'a> {
     /// Deserializes a message from the PTP wire format.
     ///
     /// Returns the message or an error.
-    pub(crate) fn deserialize(buffer: &'a [u8]) -> Result<Self, super::WireFormatError> {
+    pub(crate) fn deserialize(buffer: &[u8]) -> Result<Self, super::WireFormatError> {
         let header_data = Header::deserialize_header(buffer)?;
 
-        if header_data.message_length < 34 {
+        /* if header_data.message_length < 34 {
             return Err(WireFormatError::Invalid);
-        }
+        } */
 
         // Ensure we have the entire message and ignore potential padding
         // Skip the header bytes and only keep the content
         let content_buffer = buffer
-            .get(34..(header_data.message_length as usize))
+            .get(40..buffer.len())
             .ok_or(WireFormatError::BufferTooShort)?;
 
         let body = MessageBody::deserialize(
-            header_data.message_type,
+            header_data.control,
             &header_data.header,
             content_buffer,
         )?;
 
-        let tlv_buffer = &content_buffer
-            .get(body.wire_size()..)
-            .ok_or(super::WireFormatError::BufferTooShort)?;
-        let suffix = TlvSet::deserialize(tlv_buffer)?;
-
         Ok(Message {
             header: header_data.header,
             body,
-            suffix,
         })
     }
 }

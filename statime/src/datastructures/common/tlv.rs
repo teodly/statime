@@ -5,6 +5,9 @@ pub(crate) struct TlvSet<'a> {
     bytes: &'a [u8],
 }
 
+const EMPTY_BUFFER: [u8; 0] = [];
+pub(crate) const TLV_SET_EMPTY: TlvSet<'_> = TlvSet { bytes: &EMPTY_BUFFER };
+
 impl<'a> core::fmt::Debug for TlvSet<'a> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("TlvSet")

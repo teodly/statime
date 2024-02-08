@@ -675,6 +675,7 @@ mod tests {
             sync_interval: Interval::ONE_SECOND,
             master_only: Default::default(),
             delay_asymmetry: Default::default(),
+            protocol_version: crate::config::ProtocolVersion::PTPv2,
         };
 
         let header = Header {
@@ -1141,6 +1142,7 @@ mod tests {
             sync_interval: Interval::ONE_SECOND,
             master_only: Default::default(),
             delay_asymmetry: Default::default(),
+            protocol_version: crate::config::ProtocolVersion::PTPv2,
         };
 
         let mut action = state.handle_event_receive(

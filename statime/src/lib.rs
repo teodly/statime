@@ -77,7 +77,7 @@
 //! `statime::fuzz` module.
 
 #![no_std]
-#![deny(missing_docs)]
+//#![deny(missing_docs)]
 #![deny(rustdoc::broken_intra_doc_links)]
 #![warn(rustdoc::unescaped_backticks)]
 #[cfg(feature = "std")]
@@ -95,6 +95,7 @@ pub mod time;
 
 pub use clock::Clock;
 pub use ptp_instance::PtpInstance;
+pub use datastructures::messages_v1::converter;
 
 /// Helper types used for fuzzing
 ///

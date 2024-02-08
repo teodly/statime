@@ -18,6 +18,16 @@ pub enum DelayMechanism {
     // No support for other delay mechanisms
 }
 
+/// PTP protocol revision
+#[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
+pub enum ProtocolVersion {
+    /// IEEE 1588-2002
+    PTPv1,
+
+    /// IEEE 1588-2019
+    PTPv2
+}
+
 /// Configuration items of the PTP PortDS dataset. Dynamical fields are kept
 /// as part of [crate::port::Port].
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Hash)]
@@ -49,6 +59,9 @@ pub struct PortConfig<A> {
     // Notes:
     // Fields specific for delay mechanism are kept as part of [DelayMechanism].
     // Version is always 2.1, so not stored (versionNumber, minorVersionNumber)
+
+    /// PTP protocol version this port will use
+    pub protocol_version: ProtocolVersion
 }
 
 impl<A> PortConfig<A> {

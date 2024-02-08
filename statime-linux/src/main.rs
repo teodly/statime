@@ -1,20 +1,14 @@
 use std::{
-    collections::HashMap,
-    future::Future,
-    path::PathBuf,
-    pin::{pin, Pin},
+    collections::{HashMap, VecDeque}, future::Future, path::PathBuf, pin::{pin, Pin}, sync::{Arc, Mutex}
 };
+
 
 use clap::Parser;
 use rand::{rngs::StdRng, SeedableRng};
 use statime::{
-    config::{ClockIdentity, InstanceConfig, SdoId, TimePropertiesDS, TimeSource},
-    filters::{Filter, KalmanConfiguration, KalmanFilter},
-    port::{
+    config::{ClockIdentity, InstanceConfig, ProtocolVersion, SdoId, TimePropertiesDS, TimeSource}, converter::{MessageConverter}, filters::{Filter, KalmanConfiguration, KalmanFilter}, port::{
         InBmca, Measurement, Port, PortAction, PortActionIterator, TimestampContext, MAX_DATA_LEN,
-    },
-    time::Time,
-    PtpInstance,
+    }, time::Time, PtpInstance
 };
 use statime_linux::{
     clock::LinuxClock,
@@ -27,7 +21,7 @@ use statime_linux::{
 use timestamped_socket::{
     interface::interfaces,
     networkaddress::{EthernetAddress, NetworkAddress},
-    socket::{InterfaceTimestampMode, Open, Socket},
+    socket::{InterfaceTimestampMode, Open, RecvResult, Socket, Timestamp},
 };
 use tokio::{
     sync::mpsc::{Receiver, Sender},
@@ -162,7 +156,7 @@ async fn clock_task(
             () = &mut measurement_timer => {
                 let (t1, t2, t3) = clock.system_offset().expect("Unable to determine offset from system clock");
 
-                log::debug!("Interclock measurement: {} {} {}", t1, t2, t3);
+                log::debug!("{:?} {:?} Interclock measurement: {} {} {}", clock, filter_clock, t1, t2, t3);
 
                 let delay = (t3-t1)/2;
                 let offset_a = t2 - t1;
@@ -322,6 +316,7 @@ async fn actual_main() {
                     general_socket,
                     bmca_notify_receiver.clone(),
                     port_clock,
+                    ProtocolVersion::PTPv1, // XXX
                 ));
             }
             statime_linux::config::NetworkMode::Ipv6 => {
@@ -337,6 +332,7 @@ async fn actual_main() {
                     general_socket,
                     bmca_notify_receiver.clone(),
                     port_clock,
+                    ProtocolVersion::PTPv1, // XXX
                 ));
             }
             statime_linux::config::NetworkMode::Ethernet => {
@@ -441,6 +437,81 @@ async fn run(
     }
 }
 
+struct ProtocolVersionAdapter<A: NetworkAddress + PtpTargetAddress + Clone> {
+    converter: Option<Arc<Mutex<MessageConverter>>>,
+    recv_queue: VecDeque<(Vec<u8>, RecvResult<A>)>,
+    socket: Socket<A, Open>,
+}
+impl<A: NetworkAddress + PtpTargetAddress + Clone> ProtocolVersionAdapter<A> {
+    // FIXME change unwraps to something more sane
+    fn new(converter: Option<Arc<Mutex<MessageConverter>>>, socket: Socket<A, Open>) -> Self {
+        Self {
+            converter,
+            recv_queue: VecDeque::new(),
+            socket
+        }
+    }
+    async fn recv_internal(&self) -> (Vec<u8>, RecvResult<A>) {
+        let mut buf = Vec::from([0u8; MAX_DATA_LEN]);
+        loop {
+            let rr = self.socket.recv(buf.as_mut_slice()).await;
+            match rr {
+                Ok(rr) => {
+                    buf.truncate(rr.bytes_read);
+                    break (buf, rr);
+                },
+                Err(e) => {
+                    log::warn!("read from socket failed: {e:?}");
+                }
+            }
+        }
+    }
+    pub async fn recv(&mut self) -> (Vec<u8>, RecvResult<A>) {
+        match &self.converter {
+            None => {
+                self.recv_internal().await
+            },
+            Some(conv) => {
+                while self.recv_queue.is_empty() {
+                    let (bytes, orig_rr) = self.recv_internal().await;
+                    let messages_v2 = conv.lock().unwrap().v1_to_v2_bytes(bytes.as_slice()).unwrap_or_default();
+                    for message in messages_v2 {
+                        let new_rr = RecvResult::<A> {
+                            bytes_read: message.len(),
+                            remote_addr: orig_rr.remote_addr.clone(),
+                            timestamp: orig_rr.timestamp.clone()
+                        };
+                        self.recv_queue.push_back((Vec::<u8>::from_iter(message), new_rr));
+                    }
+                }
+                self.recv_queue.pop_front().unwrap()
+            }
+        }
+    }
+    pub async fn send_to(&mut self, buf: &[u8], addr: A) -> std::io::Result<Option<Timestamp>> {
+        match &self.converter {
+            None => {
+                self.socket.send_to(buf, addr).await
+            },
+            Some(conv) => {
+                let mut output_ts = None;
+                let messages_v1 = conv.lock().unwrap().v2_to_v1_bytes(buf).unwrap();
+                for message in messages_v1 {
+                    if let Some(ts) = self.socket.send_to(message.as_slice(), addr.clone()).await? {
+                        if output_ts.is_none() {
+                            output_ts = Some(ts);
+                        } else {
+                            log::warn!("converter returning imprecise timestamp because more than 1 message were emitted");
+                        }
+                    }
+                }
+                Ok(output_ts)
+            }
+        }
+    }
+}
+
+
 type BmcaPort = Port<InBmca<'static>, Option<Vec<ClockIdentity>>, StdRng, LinuxClock, KalmanFilter>;
 
 // the Port task
@@ -449,14 +520,22 @@ type BmcaPort = Port<InBmca<'static>, Option<Vec<ClockIdentity>>, StdRng, LinuxC
 // It will then move the port into the running state, and process actions. When
 // the task is notified of a BMCA, it will stop running, move the port into the
 // bmca state, and send it on its Sender
-async fn port_task<A: NetworkAddress + PtpTargetAddress>(
+async fn port_task<A: NetworkAddress + PtpTargetAddress + Clone>(
     mut port_task_receiver: Receiver<BmcaPort>,
     port_task_sender: Sender<BmcaPort>,
-    mut event_socket: Socket<A, Open>,
-    mut general_socket: Socket<A, Open>,
+    event_socket: Socket<A, Open>,
+    general_socket: Socket<A, Open>,
     mut bmca_notify: tokio::sync::watch::Receiver<bool>,
     clock: LinuxClock,
+    protocol_version: ProtocolVersion,
 ) {
+    let conv = match protocol_version {
+        ProtocolVersion::PTPv2 => None,
+        ProtocolVersion::PTPv1 => Some(Arc::new(Mutex::new(MessageConverter::new())))
+    };
+    let mut event_adapter = ProtocolVersionAdapter::new(conv.clone(), event_socket);
+    let mut general_adapter = ProtocolVersionAdapter::new(conv.clone(), general_socket);
+
     let mut timers = Timers {
         port_sync_timer: pin!(Timer::new()),
         port_announce_timer: pin!(Timer::new()),
@@ -473,8 +552,8 @@ async fn port_task<A: NetworkAddress + PtpTargetAddress>(
 
         let mut pending_timestamp = handle_actions(
             actions,
-            &mut event_socket,
-            &mut general_socket,
+            &mut event_adapter,
+            &mut general_adapter,
             &mut timers,
             &clock,
         )
@@ -483,37 +562,35 @@ async fn port_task<A: NetworkAddress + PtpTargetAddress>(
         while let Some((context, timestamp)) = pending_timestamp {
             pending_timestamp = handle_actions(
                 port.handle_send_timestamp(context, timestamp),
-                &mut event_socket,
-                &mut general_socket,
+                &mut event_adapter,
+                &mut general_adapter,
                 &mut timers,
                 &clock,
             )
             .await;
         }
 
-        let mut event_buffer = [0; MAX_DATA_LEN];
-        let mut general_buffer = [0; 2048];
+        //let mut event_buffer = [0; MAX_DATA_LEN];
+        //let mut general_buffer = [0; 2048];
 
         loop {
             let mut actions = tokio::select! {
-                result = event_socket.recv(&mut event_buffer) => match result {
-                    Ok(packet) => {
-                        if let Some(mut timestamp) = packet.timestamp {
-                            // get_tai gives zero if this is a hardware clock, and the needed
-                            // correction when this port uses software timestamping
-                            timestamp.seconds += clock.get_tai_offset().expect("Unable to get tai offset") as libc::time_t;
-                            log::trace!("Recv timestamp: {:?}", packet.timestamp);
-                            port.handle_event_receive(&event_buffer[..packet.bytes_read], timestamp_to_time(timestamp))
-                        } else {
-                            log::error!("Missing recv timestamp");
-                            PortActionIterator::empty()
-                        }
+                received = event_adapter.recv() => {
+                    let (buffer, packet) = received;
+                    if let Some(mut timestamp) = packet.timestamp {
+                        // get_tai gives zero if this is a hardware clock, and the needed
+                        // correction when this port uses software timestamping
+                        timestamp.seconds += clock.get_tai_offset().expect("Unable to get tai offset") as libc::time_t;
+                        log::trace!("Recv timestamp: {:?}", packet.timestamp);
+                        port.handle_event_receive(buffer.as_slice(), timestamp_to_time(timestamp))
+                    } else {
+                        log::error!("Missing recv timestamp");
+                        PortActionIterator::empty()
                     }
-                    Err(error) => panic!("Error receiving: {error:?}"),
                 },
-                result = general_socket.recv(&mut general_buffer) => match result {
-                    Ok(packet) => port.handle_general_receive(&general_buffer[..packet.bytes_read]),
-                    Err(error) => panic!("Error receiving: {error:?}"),
+                received = general_adapter.recv() =>  {
+                    let (buffer, _packet) = received;
+                    port.handle_general_receive(buffer.as_slice())
                 },
                 () = &mut timers.port_announce_timer => {
                     port.handle_announce_timer()
@@ -539,8 +616,8 @@ async fn port_task<A: NetworkAddress + PtpTargetAddress>(
             loop {
                 let pending_timestamp = handle_actions(
                     actions,
-                    &mut event_socket,
-                    &mut general_socket,
+                    &mut event_adapter,
+                    &mut general_adapter,
                     &mut timers,
                     &clock,
                 )
@@ -666,10 +743,10 @@ struct Timers<'a> {
     filter_update_timer: Pin<&'a mut Timer>,
 }
 
-async fn handle_actions<A: NetworkAddress + PtpTargetAddress>(
+async fn handle_actions<A: NetworkAddress + PtpTargetAddress + Clone>(
     actions: PortActionIterator<'_>,
-    event_socket: &mut Socket<A, Open>,
-    general_socket: &mut Socket<A, Open>,
+    event_adapter: &mut ProtocolVersionAdapter<A>,
+    general_adapter: &mut ProtocolVersionAdapter<A>,
     timers: &mut Timers<'_>,
     clock: &LinuxClock,
 ) -> Option<(TimestampContext, Time)> {
@@ -679,7 +756,7 @@ async fn handle_actions<A: NetworkAddress + PtpTargetAddress>(
         match action {
             PortAction::SendEvent { context, data } => {
                 // send timestamp of the send
-                let time = event_socket
+                let time = event_adapter
                     .send_to(data, A::PRIMARY_EVENT)
                     .await
                     .expect("Failed to send event message");
@@ -697,7 +774,7 @@ async fn handle_actions<A: NetworkAddress + PtpTargetAddress>(
                 }
             }
             PortAction::SendGeneral { data } => {
-                general_socket
+                general_adapter
                     .send_to(data, A::PRIMARY_GENERAL)
                     .await
                     .expect("Failed to send general message");

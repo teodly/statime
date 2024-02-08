@@ -7,6 +7,7 @@ use self::messages::EnumConversionError;
 pub mod common;
 pub mod datasets;
 pub mod messages;
+pub mod messages_v1;
 
 #[derive(Clone, Debug)]
 pub(crate) enum WireFormatError {

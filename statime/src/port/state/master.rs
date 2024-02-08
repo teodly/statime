@@ -356,6 +356,7 @@ mod tests {
             sync_interval: Interval::ONE_SECOND,
             master_only: false,
             delay_asymmetry: Duration::ZERO,
+            protocol_version: crate::config::ProtocolVersion::PTPv2,
         };
         let mut state = MasterState::new();
 
@@ -419,6 +420,7 @@ mod tests {
             sync_interval: Interval::ONE_SECOND,
             master_only: false,
             delay_asymmetry: Duration::ZERO,
+            protocol_version: crate::config::ProtocolVersion::PTPv2,
         };
 
         let mut state = MasterState::new();
