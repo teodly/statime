@@ -1,5 +1,6 @@
 //! Definitions and implementations of the abstract clock types
 
+use auto_impl::auto_impl;
 use crate::{
     datastructures::datasets::TimePropertiesDS,
     time::{Duration, Time},
@@ -16,6 +17,7 @@ use crate::{
 /// Note that the clock implementation is responsible for handling leap seconds.
 /// On most operating systems, this will be provided for by the OS, but on some
 /// platforms this may require extra logic.
+#[auto_impl(Box)]
 pub trait Clock {
     /// Type of the error the methods of this [`Clock`] may return
     type Error: core::fmt::Debug;

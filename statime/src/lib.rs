@@ -85,6 +85,9 @@ extern crate std;
 
 mod bmc;
 mod clock;
+mod overlay_clock;
+#[cfg(feature = "std")]
+mod shared_clock;
 pub mod config;
 pub(crate) mod datastructures;
 pub mod filters;
@@ -94,6 +97,9 @@ mod ptp_instance;
 pub mod time;
 
 pub use clock::Clock;
+pub use overlay_clock::OverlayClock;
+#[cfg(feature = "std")]
+pub use shared_clock::SharedClock;
 pub use ptp_instance::PtpInstance;
 
 /// Helper types used for fuzzing
