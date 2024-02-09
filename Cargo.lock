@@ -89,6 +89,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "auto_impl"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "823b8bb275161044e2ac7a25879cb3e2480cb403e3943022c7c769c599b756aa"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "az"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -512,6 +523,7 @@ version = "0.1.0"
 dependencies = [
  "arrayvec",
  "atomic_refcell",
+ "auto_impl",
  "az",
  "fixed",
  "libm",
@@ -528,6 +540,7 @@ dependencies = [
  "clock-steering",
  "fern",
  "hex",
+ "lazy_static",
  "libc",
  "log",
  "pin-project-lite",

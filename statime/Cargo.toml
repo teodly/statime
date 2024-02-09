@@ -24,3 +24,4 @@ libm.workspace = true
 log = { workspace = true, default-features = false}
 rand = { workspace = true, default-features = false }
 atomic_refcell.workspace = true
+auto_impl.workspace = true

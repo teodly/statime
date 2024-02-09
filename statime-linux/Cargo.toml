@@ -37,6 +37,7 @@ serde_json.workspace = true
 
 clock-steering.workspace = true
 timestamped-socket.workspace = true
+lazy_static.workspace = true
 
 [package.metadata.deb]
 name = "statime"
