@@ -29,6 +29,7 @@ use tokio::{
     sync::mpsc::{Receiver, Sender},
     time::Sleep,
 };
+use futures::io::AsyncWriteExt;
 
 trait PortClock: Clock<Error = <LinuxClock as Clock>::Error> + PortTimestampToTime {}
 impl PortClock for LinuxClock {
@@ -172,7 +173,7 @@ async fn clock_task(
                 let t3 = clock_locked.time_from_underlying(raw_t3);
                 drop(clock_locked);
 
-                log::debug!("{:?} {:?} Interclock measurement: {} {} {}", clock, system_clock, t1, t2, t3);
+                log::debug!("Interclock measurement: {} {} {}", t1, t2, t3);
 
                 let delay = (t3-t1)/2;
                 let offset_a = t2 - t1;
@@ -248,6 +249,40 @@ async fn actual_main() {
     .unwrap_or_else(|e| panic!("error loading config: {e}"));
 
     statime_linux::setup_logger(config.loglevel).expect("could not setup logging");
+
+    let (update_from_clock, updates_for_clients) = tokio::sync::watch::channel([0u8; 32]);
+    global_clock.0.lock().unwrap().subscribe(Box::new(move |buf: &[u8; 32]| {
+        update_from_clock.send_replace(buf.clone());
+    }));
+
+    let socket_path = "/tmp/ptp-clock-overlay";
+    let _ = std::fs::remove_file(socket_path);
+    let listener = interprocess::local_socket::tokio::LocalSocketListener::bind(socket_path).unwrap();
+    let mut permissions = std::fs::metadata(socket_path).unwrap().permissions();
+    permissions.set_readonly(false);
+    let _ = std::fs::set_permissions(socket_path, permissions);
+
+    tokio::spawn(async move {
+        loop {
+            let mut stream = listener.accept().await.unwrap();
+            let mut updates = updates_for_clients.clone();
+            tokio::spawn(async move {
+                let buf = updates.borrow_and_update().clone();
+                if stream.write_all(&buf).await.is_err() {
+                    return;
+                };
+                loop {
+                    if updates.changed().await.is_err() {
+                        break;
+                    }
+                    let buf = updates.borrow_and_update().clone();
+                    if stream.write_all(&buf).await.is_err() {
+                        break;
+                    };
+                }
+            });
+        }
+    });
 
     let clock_identity = config.identity.unwrap_or(ClockIdentity(
         get_clock_id().expect("could not get clock identity"),

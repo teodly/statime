@@ -38,6 +38,8 @@ serde_json.workspace = true
 clock-steering.workspace = true
 timestamped-socket.workspace = true
 lazy_static.workspace = true
+interprocess = { version = "1.2.1", features = ["tokio_support"] }
+futures = "0.3.30"
 
 [package.metadata.deb]
 name = "statime"
