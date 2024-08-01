@@ -298,15 +298,15 @@ async fn actual_main() {
     for port_config in config.ports {
         let interface = port_config.interface;
         let network_mode = port_config.network_mode;
-        let (port_clock, port_clock2, timestamping) = match port_config.hardware_clock {
-            Some(idx) => {
-                let clock = LinuxClock::open_idx(idx).expect("Unable to open clock");
-                if let Some(id) = clock_name_map.get(&idx) {
+        let (port_clock, port_clock2, timestamping) = match &port_config.hardware_clock {
+            Some(path) => {
+                let clock = LinuxClock::open(path).expect("Unable to open clock");
+                if let Some(id) = clock_name_map.get(path) {
                     clock_port_map.push(Some(*id));
                 } else {
                     let id = internal_sync_senders.len();
                     clock_port_map.push(Some(id));
-                    clock_name_map.insert(idx, id);
+                    clock_name_map.insert(path.clone(), id);
                     internal_sync_senders.push(start_clock_task(clock.clone(), system_clock.clone()));
                 }
                 (
@@ -326,7 +326,6 @@ async fn actual_main() {
         };
 
         let rng = StdRng::from_entropy();
-        let bind_phc = port_config.hardware_clock;
         let port = instance.add_port(
             port_config.into(),
             KalmanConfiguration::default(),
@@ -346,7 +345,7 @@ async fn actual_main() {
 
         match network_mode {
             statime_linux::config::NetworkMode::Ipv4 => {
-                let event_socket = open_ipv4_event_socket(interface, timestamping, bind_phc)
+                let event_socket = open_ipv4_event_socket(interface, timestamping)
                     .expect("Could not open event socket");
                 let general_socket =
                     open_ipv4_general_socket(interface).expect("Could not open general socket");
@@ -362,7 +361,7 @@ async fn actual_main() {
                 ));
             }
             statime_linux::config::NetworkMode::Ipv6 => {
-                let event_socket = open_ipv6_event_socket(interface, timestamping, bind_phc)
+                let event_socket = open_ipv6_event_socket(interface, timestamping)
                     .expect("Could not open event socket");
                 let general_socket =
                     open_ipv6_general_socket(interface).expect("Could not open general socket");
@@ -378,8 +377,8 @@ async fn actual_main() {
                 ));
             }
             statime_linux::config::NetworkMode::Ethernet => {
-                let socket = open_ethernet_socket(interface, timestamping, bind_phc)
-                    .expect("Could not open socket");
+                let socket =
+                    open_ethernet_socket(interface, timestamping).expect("Could not open socket");
 
                 tokio::spawn(ethernet_port_task(
                     port_task_receiver,
