@@ -61,7 +61,7 @@ impl LinuxClock {
 }
 
 fn clock_timestamp_to_time(t: clock_steering::Timestamp) -> Time {
-    Time::from_nanos((t.seconds as u64) * 1_000_000_000 + (t.nanos as u64))
+    Time::from_secs(t.seconds as u64) + Duration::from_nanos(t.nanos as i64)
 }
 
 fn time_from_timestamp(timestamp: clock_steering::Timestamp, fallback: Time) -> Time {
@@ -107,8 +107,8 @@ impl Clock for LinuxClock {
         let offset = TimeOffset {
             seconds: offset_nanos
                 .div_euclid(1_000_000_000)
-                .try_into()
-                .expect("Unexpected jump larger than 2^64 seconds"),
+                .clamp((i64::MIN/8).into(), (i64::MAX/8).into())
+                .try_into().unwrap(),
             nanos: offset_nanos.rem_euclid(1_000_000_000) as _, // Result will always fit in u32
         };
 
@@ -162,7 +162,7 @@ impl PortTimestampToTime for LinuxClock {
         // get_tai gives zero if this is a hardware clock, and the needed
         // correction when this port uses software timestamping
         ts.seconds += self.get_tai_offset().expect("Unable to get tai offset") as libc::time_t;
-        Time::from_fixed_nanos(ts.seconds as i128 * 1_000_000_000i128 + ts.nanos as i128)
+        Time::from_secs(ts.seconds as u64) + Duration::from_fixed_nanos(ts.nanos)
     }
 }
 
