@@ -5,8 +5,9 @@ use std::path::Path;
 use clock_steering::{unix::UnixClock, TimeOffset};
 use statime::{
     config::{LeapIndicator, TimePropertiesDS},
+    overlay_clock::{ClockOverlayExporter, OverlayClock},
     time::{Duration, Time},
-    Clock, OverlayClock, SharedClock,
+    Clock, SharedClock,
 };
 
 #[derive(Debug, Clone)]
@@ -187,14 +188,18 @@ impl PortTimestampToTime for LinuxClock {
     }
 }
 
-impl PortTimestampToTime for OverlayClock<LinuxClock> {
+impl<E: ClockOverlayExporter + core::fmt::Debug> PortTimestampToTime
+    for OverlayClock<LinuxClock, E>
+{
     fn port_timestamp_to_time(&self, ts: timestamped_socket::socket::Timestamp) -> Time {
         let roclock_time = self.underlying().port_timestamp_to_time(ts);
         self.time_from_underlying(roclock_time)
     }
 }
 
-impl PortTimestampToTime for SharedClock<OverlayClock<LinuxClock>> {
+impl<E: ClockOverlayExporter + core::fmt::Debug> PortTimestampToTime
+    for SharedClock<OverlayClock<LinuxClock, E>>
+{
     fn port_timestamp_to_time(&self, ts: timestamped_socket::socket::Timestamp) -> Time {
         self.0.lock().unwrap().port_timestamp_to_time(ts)
     }

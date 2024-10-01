@@ -90,7 +90,7 @@ pub(crate) mod datastructures;
 pub mod filters;
 mod float_polyfill;
 pub mod observability;
-mod overlay_clock;
+pub mod overlay_clock;
 pub mod port;
 mod ptp_instance;
 #[cfg(feature = "std")]
