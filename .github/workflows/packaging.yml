@@ -27,7 +27,7 @@ jobs:
           version: 1
 
       - name: Install toolchain
-        uses: dtolnay/rust-toolchain@7b1c307e0dcbda6122208f10795a713336a9b35a
+        uses: dtolnay/rust-toolchain@315e265cd78dad1e1dcf3a5074f6d6c47029d5aa
         with:
           toolchain: "stable"
           components: "llvm-tools"
@@ -44,7 +44,7 @@ jobs:
         run: RELEASE_TARGETS="${{ matrix.target }}" utils/build-release.sh
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: release-binaries-${{ matrix.target }}
           path: target/pkg/
@@ -66,7 +66,7 @@ jobs:
           rm -rf SHA256SUMS
           sha256sum -b * > SHA256SUMS
       - name: Upload artifacts
-        uses: actions/upload-artifact@50769540e7f4bd5e21e526ee35c689e35e0d6874 # v4.4.0
+        uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
         with:
           name: release-binaries
           path: target/pkg/
@@ -93,7 +93,7 @@ jobs:
           path: target/pkg/
 
       - name: Install toolchain
-        uses: dtolnay/rust-toolchain@7b1c307e0dcbda6122208f10795a713336a9b35a
+        uses: dtolnay/rust-toolchain@315e265cd78dad1e1dcf3a5074f6d6c47029d5aa
         with:
           toolchain: "stable"
           components: "llvm-tools"
@@ -132,7 +132,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Create a draft release
-        uses: softprops/action-gh-release@c062e08bd532815e2082a85e87e3ef29c3e6d191 # v2.0.8
+        uses: softprops/action-gh-release@01570a1f39cb168c169c802c3bceb9e93fb10974 # v2.1.0
         with:
           draft: true
           fail_on_unmatched_files: true
