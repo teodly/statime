@@ -1,0 +1,16 @@
+loglevel = "trace" # Other values include trace, debug, warn and error
+
+# which ptp network to participate in?
+sdo-id = 0
+domain = 0
+priority1 = 251 # Dante hardware devices use 249 in PTPv2
+virtual-system-clock = true
+usrvclock-export = true
+
+# Add one of these per network interface in your system
+[[port]]
+interface = "enp0s31f6"
+network-mode = "ipv4" #can also be ipv6 or ethernet
+# If the network interface has hardware clock support, you can enable it with
+#hardware-clock = 0
+protocol-version = "PTPv1"
