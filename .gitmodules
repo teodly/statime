@@ -1,0 +1,3 @@
+[submodule "timestamped-socket"]
+	path = timestamped-socket
+	url = https://github.com/teodly/timestamped-socket
