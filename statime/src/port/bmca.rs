@@ -333,6 +333,12 @@ impl<A, C: Clock, F: Filter, R: Rng, S: PtpInstanceStateMutex> Port<'_, InBmca, 
                         duration: core::time::Duration::ZERO,
                     };
                     self.lifecycle.pending_action = actions![reset_announce, reset_delay];
+
+                    let key = hex::encode(self.port_identity.clock_identity.0) + &hex::encode(self.port_identity.port_number.to_be_bytes());
+                    let master_str = hex::encode(remote_master.clock_identity.0) + &hex::encode(remote_master.port_number.to_be_bytes());
+                    let tmp_file_name = std::format!("/tmp/.clock-stats.{key}.tmp");
+                    let _ = std::fs::write(&tmp_file_name, master_str);
+                    let _ = std::fs::rename(tmp_file_name, std::format!("/tmp/clock-stats.{key}"));
                 }
             }
             RecommendedState::M1(_) | RecommendedState::M2(_) | RecommendedState::M3(_) => {

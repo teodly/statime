@@ -604,6 +604,7 @@ dependencies = [
  "arrayvec",
  "az",
  "fixed",
+ "hex",
  "libm",
  "log",
  "rand",

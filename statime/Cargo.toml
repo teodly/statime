@@ -21,6 +21,7 @@ serde = ["dep:serde", "arrayvec/serde"]
 arrayvec.workspace = true
 az.workspace = true
 fixed.workspace = true
+hex.workspace = true
 libm.workspace = true
 log = { workspace = true, default-features = false}
 rand = { workspace = true, default-features = false }
