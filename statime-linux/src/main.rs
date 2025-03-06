@@ -20,14 +20,10 @@ use statime::{
     Clock, PtpInstance, PtpInstanceState, SharedClock,
 };
 use statime_linux::{
-    clock::{LinuxClock, PortTimestampToTime},
-    initialize_logging_parse_config,
-    observer::ObservableInstanceState,
-    socket::{
+    clock::{LinuxClock, PortTimestampToTime}, config::ProtocolVersion, initialize_logging_parse_config, observer::ObservableInstanceState, socket::{
         open_ethernet_socket, open_ipv4_event_socket, open_ipv4_general_socket,
         open_ipv6_event_socket, open_ipv6_general_socket, PtpTargetAddress,
-    },
-    tlvforwarder::TlvForwarder,
+    }, tlvforwarder::TlvForwarder
 };
 use timestamped_socket::{
     interface::interfaces,
@@ -352,7 +348,10 @@ async fn actual_main() {
                 }
                 (
                     Box::new(clock) as BoxedClock,
-                    InterfaceTimestampMode::HardwarePTPAll,
+                    match port_config.protocol_version {
+                        ProtocolVersion::PTPv2 => InterfaceTimestampMode::HardwarePTPv2All,
+                        ProtocolVersion::PTPv1 => InterfaceTimestampMode::HardwarePTPv1All,
+                    }
                 )
             }
             None => {
