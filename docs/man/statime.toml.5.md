@@ -1,5 +1,5 @@
 <!-- ---
-title: STATIME.TOML(5) statime 0.2.2 | statime
+title: STATIME.TOML(5) statime 0.4.0 | statime
 --- -->
 
 # NAME
@@ -31,6 +31,9 @@ will be indicated by each configuration setting shown.
 
 `sdo-id` = *u12* (**0**)
 :   The "source domain identity" of this PTP instance. Together with the `domain` it identifies a domain.
+
+`slave-only` = *bool* (**false**)
+:   Forbids this instance to ever become a master on any port.
 
 `priority1` = *priority* (**128**)
 :   A tie breaker for the best master clock algorithm in the range `0..256`. `0` being the highest priority and `255` the lowest.
@@ -76,11 +79,39 @@ will be indicated by each configuration setting shown.
 `master-only` = *bool* (**false**)
 :   The port is always a master instance, and will never become a slave instance.
 
-`hardware-clock` = *index* (**unset**)
-:   Index of a hardware clock device, for instance `0` for `/dev/ptp0`.
+`hardware-clock` = `auto` | `required` | `none` | *index* (**auto**)
+:   Index of a hardware clock device, for instance `0` for `/dev/ptp0`. Set to
+    auto to automatically configure the hardware clock if one is available. Set
+    to required if you need a hardware clock and want the configuration to fail
+    if one is not available. Set to none to disable using a hardware clock.
 
 `acceptable-master-list` = [ *clock identity*, .. ] (**unset**)
 :   List of clock identities that this port will accept as its master.
     A clock identity is encoded as a 16-character hexadecimal string, for example
     `acceptable-master-list = ["00FFFFFFFFFFFFFB"]`.
     The default is to accept all clock identities.
+
+`minor-ptp-version` = *version number* (**1**)
+:   Set a different minor ptp version. Should be either 1 or 0, intended to work around misbehaving ptp 2.0 hardware
+
+## `[observability]`
+
+`observation-path` = *path* (**unset**)
+:   Path where the daemon will create an observation Unix domain socket. This
+    socket is used by `statime-metrics-exporter` to read the current
+    status of the daemon. If not set (the default) no observation socket will be
+    created, and it is not possible to use `statime-metrics-exporter` to
+    observe the daemon.
+
+`observation-permissions` = *mode* (**0o666**)
+:   The file system permissions with which the observation socket should be
+    created. Warning: You should always write this number with the octal prefix
+    `0o`, otherwise your permissions might be interpreted wrongly. The default
+    should be OK for most applications.
+
+`metrics-exporter-listen` = *socketaddr* (**127.0.0.1:9975**)
+:   The listen address that is used for the statime-metrics-exporter(8).
+
+# SEE ALSO
+
+[statime(8)](statime.8.md), [statime-metrics-exporter(8)](statime-metrics-exporter.8.md)

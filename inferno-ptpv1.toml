@@ -11,6 +11,8 @@ usrvclock-export = true
 [[port]]
 interface = "enp0s31f6"
 network-mode = "ipv4" #can also be ipv6 or ethernet
-# If the network interface has hardware clock support, you can enable it with
-#hardware-clock = 0
+
+# hardware-clock = auto | required | none | index (default: auto)
+hardware-clock = "none"
+
 protocol-version = "PTPv1"

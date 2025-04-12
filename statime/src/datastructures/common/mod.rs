@@ -18,7 +18,7 @@ pub use clock_quality::*;
 pub use grandmaster_v1::*;
 pub use leap_indicator::*;
 pub(crate) use port_identity::*;
-pub(crate) use time_interval::*;
+pub use time_interval::*;
 pub use time_source::*;
 pub use timestamp::*;
 pub use timestamp_v1::*;

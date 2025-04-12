@@ -8,7 +8,7 @@ use std::{
 use log::warn;
 use serde::{Deserialize, Deserializer};
 use statime::{
-    config::{ClockIdentity, DelayMechanism},
+    config::{ClockIdentity, DelayMechanism, PtpMinorVersion},
     time::{Duration, Interval},
 };
 use timestamped_socket::interface::InterfaceName;
@@ -24,6 +24,8 @@ pub struct Config {
     pub sdo_id: u16,
     #[serde(default = "default_domain")]
     pub domain: u8,
+    #[serde(default = "default_slave_only")]
+    pub slave_only: bool,
     #[serde(default, deserialize_with = "deserialize_clock_identity")]
     pub identity: Option<ClockIdentity>,
     #[serde(default = "default_priority1")]
@@ -44,6 +46,46 @@ pub struct Config {
     pub usrvclock_path: PathBuf,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum HardwareClock {
+    /// Automatically use the (default) hardware clock for the interface
+    /// specified if available
+    #[default]
+    Auto,
+    /// Require the use of the (default) hardware clock for the interface
+    /// specified. If a hardware clock is not available, statime will refuse
+    /// to start.
+    Required,
+    /// Use the specified hardware clock
+    Specific(u32),
+    /// Do not use a hardware clock
+    None,
+}
+
+impl<'de> Deserialize<'de> for HardwareClock {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        let raw: String = Deserialize::deserialize(deserializer)?;
+
+        if raw == "auto" {
+            Ok(HardwareClock::Auto)
+        } else if raw == "required" {
+            Ok(HardwareClock::Required)
+        } else if raw == "none" {
+            Ok(HardwareClock::None)
+        } else {
+            let clock = raw
+                .parse()
+                .map_err(|e| D::Error::custom(format!("Invalid hardware clock: {}", e)))?;
+            Ok(HardwareClock::Specific(clock))
+        }
+    }
+}
+
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct PortConfig {
@@ -51,7 +93,7 @@ pub struct PortConfig {
     #[serde(default, deserialize_with = "deserialize_acceptable_master_list")]
     pub acceptable_master_list: Option<Vec<ClockIdentity>>,
     #[serde(default)]
-    pub hardware_clock: Option<u32>,
+    pub hardware_clock: HardwareClock,
     #[serde(default)]
     pub network_mode: NetworkMode,
     #[serde(default = "default_announce_interval")]
@@ -70,6 +112,20 @@ pub struct PortConfig {
     pub delay_interval: i8,
     #[serde(default)]
     pub protocol_version: ProtocolVersion,
+    #[serde(
+        default = "default_minor_ptp_version",
+        deserialize_with = "deserialize_minor_version"
+    )]
+    pub minor_ptp_version: PtpMinorVersion,
+}
+
+fn deserialize_minor_version<'de, D>(deserializer: D) -> Result<PtpMinorVersion, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    use serde::de::Error;
+    let raw: u8 = Deserialize::deserialize(deserializer)?;
+    raw.try_into().map_err(D::Error::custom)
 }
 
 fn deserialize_acceptable_master_list<'de, D>(
@@ -126,6 +182,7 @@ impl From<PortConfig> for statime::config::PortConfig<Option<Vec<ClockIdentity>>
                 ProtocolVersion::PTPv1 => statime::config::ProtocolVersion::PTPv1,
                 ProtocolVersion::PTPv2 => statime::config::ProtocolVersion::PTPv2,
             },
+            minor_ptp_version: pc.minor_ptp_version,
         }
     }
 }
@@ -208,6 +265,10 @@ fn default_sdo_id() -> u16 {
     0x000
 }
 
+fn default_slave_only() -> bool {
+    false
+}
+
 fn default_announce_interval() -> i8 {
     1
 }
@@ -238,6 +299,10 @@ fn default_delay_asymmetry() -> i64 {
 
 fn default_delay_interval() -> i8 {
     0
+}
+
+fn default_minor_ptp_version() -> PtpMinorVersion {
+    PtpMinorVersion::One
 }
 
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
@@ -273,9 +338,13 @@ fn default_metrics_exporter_listen() -> SocketAddr {
 mod tests {
     use std::str::FromStr;
 
+    use statime::config::PtpMinorVersion;
     use timestamped_socket::interface::InterfaceName;
 
-    use crate::{config::ObservabilityConfig, tracing::LogLevel};
+    use crate::{
+        config::{HardwareClock, ObservabilityConfig},
+        tracing::LogLevel,
+    };
 
     // Minimal amount of config results in default values
     #[test]
@@ -288,7 +357,7 @@ interface = "enp0s31f6"
         let expected_port = crate::config::PortConfig {
             interface: InterfaceName::from_str("enp0s31f6").unwrap(),
             acceptable_master_list: None,
-            hardware_clock: None,
+            hardware_clock: HardwareClock::Auto,
             network_mode: crate::config::NetworkMode::Ipv4,
             announce_interval: 1,
             sync_interval: 0,
@@ -298,12 +367,14 @@ interface = "enp0s31f6"
             delay_mechanism: crate::config::DelayType::E2E,
             delay_interval: 0,
             protocol_version: crate::config::ProtocolVersion::PTPv2,
+            minor_ptp_version: PtpMinorVersion::One,
         };
 
         let expected = crate::config::Config {
             loglevel: LogLevel::Info,
             sdo_id: 0x000,
             domain: 0,
+            slave_only: false,
             identity: None,
             priority1: 128,
             priority2: 128,

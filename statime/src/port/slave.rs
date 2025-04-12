@@ -631,7 +631,12 @@ impl<A, C: Clock, F: Filter, R: Rng, S: PtpInstanceStateMutex> Port<'_, Running,
         let pdelay_id = self.pdelay_seq_ids.generate();
 
         let pdelay_req = self.instance_state.with_ref(|state| {
-            Message::pdelay_req(&state.default_ds, self.port_identity, pdelay_id)
+            Message::pdelay_req(
+                &state.default_ds,
+                self.port_identity,
+                pdelay_id,
+                self.config.minor_ptp_version.into(),
+            )
         });
         let message_length = match pdelay_req.serialize(&mut self.packet_buffer) {
             Ok(length) => length,
@@ -680,7 +685,12 @@ impl<A, C: Clock, F: Filter, R: Rng, S: PtpInstanceStateMutex> Port<'_, Running,
                 let serialize_result = match self.config.protocol_version {
                     ProtocolVersion::PTPv2 => {
                         let delay_req = self.instance_state.with_ref(|state| {
-                            Message::delay_req(&state.default_ds, self.port_identity, delay_id)
+                            Message::delay_req(
+                                &state.default_ds,
+                                self.port_identity,
+                                delay_id,
+                                self.config.minor_ptp_version.into(),
+                            )
                         });
                         delay_req.serialize(&mut self.packet_buffer)
                     }
@@ -781,6 +791,10 @@ mod tests {
         fn update<C: Clock>(&mut self, _clock: &mut C) -> FilterUpdate {
             Default::default()
         }
+
+        fn current_estimates(&self) -> crate::filters::FilterEstimate {
+            unimplemented!()
+        }
     }
 
     #[test]
@@ -798,7 +812,7 @@ mod tests {
             Header {
                 two_step_flag: false,
                 correction_field: TimeInterval(1000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             SyncMessage {
                 origin_timestamp: Time::from_micros(0).into(),
@@ -825,7 +839,7 @@ mod tests {
                 two_step_flag: true,
                 sequence_id: 15,
                 correction_field: TimeInterval(1000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             SyncMessage {
                 origin_timestamp: Time::from_micros(0).into(),
@@ -840,7 +854,7 @@ mod tests {
             Header {
                 sequence_id: 15,
                 correction_field: TimeInterval(2000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             FollowUpMessage {
                 precise_origin_timestamp: Time::from_micros(1000).into(),
@@ -880,7 +894,7 @@ mod tests {
             Header {
                 two_step_flag: false,
                 correction_field: TimeInterval(1000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             SyncMessage {
                 origin_timestamp: Time::from_micros(0).into(),
@@ -917,7 +931,7 @@ mod tests {
             Header {
                 two_step_flag: false,
                 correction_field: TimeInterval(1000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             SyncMessage {
                 origin_timestamp: Time::from_micros(0).into(),
@@ -980,7 +994,7 @@ mod tests {
             Header {
                 correction_field: TimeInterval(2000.into()),
                 sequence_id: req_header.sequence_id,
-                ..Default::default()
+                ..Header::new(1)
             },
             DelayRespMessage {
                 receive_timestamp: Time::from_micros(253).into(),
@@ -1010,7 +1024,7 @@ mod tests {
             Header {
                 two_step_flag: true,
                 correction_field: TimeInterval(1000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             SyncMessage {
                 origin_timestamp: Time::from_micros(0).into(),
@@ -1062,7 +1076,7 @@ mod tests {
         let mut action = port.handle_follow_up(
             Header {
                 correction_field: TimeInterval(2000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             FollowUpMessage {
                 precise_origin_timestamp: Time::from_micros(1000).into(),
@@ -1087,7 +1101,7 @@ mod tests {
             Header {
                 correction_field: TimeInterval(2000.into()),
                 sequence_id: req_header.sequence_id,
-                ..Default::default()
+                ..Header::new(1)
             },
             DelayRespMessage {
                 receive_timestamp: Time::from_micros(1255).into(),
@@ -1127,7 +1141,7 @@ mod tests {
             Header {
                 sequence_id: 15,
                 correction_field: TimeInterval(2000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             FollowUpMessage {
                 precise_origin_timestamp: Time::from_micros(10).into(),
@@ -1144,7 +1158,7 @@ mod tests {
                 two_step_flag: true,
                 sequence_id: 15,
                 correction_field: TimeInterval(1000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             SyncMessage {
                 origin_timestamp: Time::from_micros(0).into(),
@@ -1183,7 +1197,7 @@ mod tests {
                 two_step_flag: true,
                 sequence_id: 15,
                 correction_field: TimeInterval(1000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             SyncMessage {
                 origin_timestamp: Time::from_micros(0).into(),
@@ -1199,7 +1213,7 @@ mod tests {
             Header {
                 sequence_id: 14,
                 correction_field: TimeInterval(2000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             FollowUpMessage {
                 precise_origin_timestamp: Time::from_micros(10).into(),
@@ -1215,7 +1229,7 @@ mod tests {
             Header {
                 sequence_id: 15,
                 correction_field: TimeInterval(2000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             FollowUpMessage {
                 precise_origin_timestamp: Time::from_micros(10).into(),
@@ -1244,7 +1258,7 @@ mod tests {
                 two_step_flag: true,
                 sequence_id: 14,
                 correction_field: TimeInterval(1000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             SyncMessage {
                 origin_timestamp: Time::from_micros(0).into(),
@@ -1261,7 +1275,7 @@ mod tests {
                 two_step_flag: true,
                 sequence_id: 15,
                 correction_field: TimeInterval(1000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             SyncMessage {
                 origin_timestamp: Time::from_micros(0).into(),
@@ -1277,7 +1291,7 @@ mod tests {
             Header {
                 sequence_id: 15,
                 correction_field: TimeInterval(2000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             FollowUpMessage {
                 precise_origin_timestamp: Time::from_micros(1000).into(),
@@ -1314,7 +1328,7 @@ mod tests {
             Header {
                 two_step_flag: false,
                 correction_field: TimeInterval(1000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             SyncMessage {
                 origin_timestamp: Time::from_micros(0).into(),
@@ -1378,7 +1392,7 @@ mod tests {
             Header {
                 correction_field: TimeInterval(2000.into()),
                 sequence_id: req_header.sequence_id,
-                ..Default::default()
+                ..Header::new(1)
             },
             DelayRespMessage {
                 receive_timestamp: Time::from_micros(353).into(),
@@ -1398,7 +1412,7 @@ mod tests {
             Header {
                 correction_field: TimeInterval(2000.into()),
                 sequence_id: req_header.sequence_id.wrapping_sub(1),
-                ..Default::default()
+                ..Header::new(1)
             },
             DelayRespMessage {
                 receive_timestamp: Time::from_micros(353).into(),
@@ -1415,7 +1429,7 @@ mod tests {
             Header {
                 correction_field: TimeInterval(2000.into()),
                 sequence_id: req_header.sequence_id,
-                ..Default::default()
+                ..Header::new(1)
             },
             DelayRespMessage {
                 receive_timestamp: Time::from_micros(253).into(),
@@ -1482,7 +1496,7 @@ mod tests {
         let mut actions = port.handle_peer_delay_response(
             Header {
                 correction_field: TimeInterval(2000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             PDelayRespMessage {
                 request_receive_timestamp: Time::from_micros(100).into(),
@@ -1549,7 +1563,7 @@ mod tests {
                 two_step_flag: true,
                 correction_field: TimeInterval(1000.into()),
                 sequence_id: req.header.sequence_id,
-                ..Default::default()
+                ..Header::new(1)
             },
             PDelayRespMessage {
                 request_receive_timestamp: Time::from_micros(101).into(),
@@ -1565,7 +1579,7 @@ mod tests {
             Header {
                 correction_field: TimeInterval(1000.into()),
                 sequence_id: req.header.sequence_id,
-                ..Default::default()
+                ..Header::new(1)
             },
             PDelayRespFollowUpMessage {
                 response_origin_timestamp: Time::from_micros(103).into(),
@@ -1630,7 +1644,7 @@ mod tests {
             Header {
                 correction_field: TimeInterval(1000.into()),
                 sequence_id: req.header.sequence_id,
-                ..Default::default()
+                ..Header::new(1)
             },
             PDelayRespFollowUpMessage {
                 response_origin_timestamp: Time::from_micros(103).into(),
@@ -1646,7 +1660,7 @@ mod tests {
                 two_step_flag: true,
                 correction_field: TimeInterval(1000.into()),
                 sequence_id: req.header.sequence_id,
-                ..Default::default()
+                ..Header::new(1)
             },
             PDelayRespMessage {
                 request_receive_timestamp: Time::from_micros(101).into(),
@@ -1713,7 +1727,7 @@ mod tests {
             Header {
                 correction_field: TimeInterval(2000.into()),
                 sequence_id: req.header.sequence_id,
-                ..Default::default()
+                ..Header::new(1)
             },
             PDelayRespMessage {
                 request_receive_timestamp: Time::from_micros(100).into(),
@@ -1743,7 +1757,7 @@ mod tests {
                     port_number: 5,
                 },
                 correction_field: TimeInterval(2000.into()),
-                ..Default::default()
+                ..Header::new(1)
             },
             PDelayRespMessage {
                 request_receive_timestamp: Time::from_micros(100).into(),
@@ -1786,7 +1800,7 @@ mod tests {
             Header {
                 correction_field: TimeInterval(2000.into()),
                 sequence_id: req.header.sequence_id,
-                ..Default::default()
+                ..Header::new(1)
             },
             PDelayRespMessage {
                 request_receive_timestamp: Time::from_micros(100).into(),

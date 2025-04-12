@@ -20,7 +20,11 @@ use statime::{
     Clock, PtpInstance, PtpInstanceState, SharedClock,
 };
 use statime_linux::{
-    clock::{LinuxClock, PortTimestampToTime}, config::ProtocolVersion, initialize_logging_parse_config, observer::ObservableInstanceState, socket::{
+    clock::{LinuxClock, PortTimestampToTime},
+    config::{HardwareClock, PortConfig, ProtocolVersion},
+    initialize_logging_parse_config,
+    observer::ObservableInstanceState,
+    socket::{
         open_ethernet_socket, open_ipv4_event_socket, open_ipv4_general_socket,
         open_ipv6_event_socket, open_ipv6_general_socket, PtpTargetAddress,
     }, tlvforwarder::TlvForwarder
@@ -266,7 +270,7 @@ async fn actual_main() {
         priority_1: config.priority1,
         priority_2: config.priority2,
         domain_number: config.domain,
-        slave_only: false,
+        slave_only: config.slave_only,
         sdo_id: SdoId::try_from(config.sdo_id).expect("sdo-id should be between 0 and 4095"),
         path_trace: config.path_trace,
     };
@@ -310,10 +314,11 @@ async fn actual_main() {
     let (instance_state_sender, instance_state_receiver) =
         tokio::sync::watch::channel(ObservableInstanceState {
             default_ds: instance.default_ds(),
-            current_ds: instance.current_ds(),
+            current_ds: instance.current_ds(None),
             parent_ds: instance.parent_ds(),
             time_properties_ds: instance.time_properties_ds(),
             path_trace_ds: instance.path_trace_ds(),
+            port_ds: vec![],
         });
     statime_linux::observer::spawn(&config, instance_state_receiver).await;
 
@@ -331,41 +336,56 @@ async fn actual_main() {
 
     let tlv_forwarder = TlvForwarder::new();
 
+    let mut add_hw_clock = |idx: u32, clock_port_map: &mut Vec<Option<usize>>, port_config: &PortConfig| {
+        let mut clock = LinuxClock::open_idx(idx).expect("Unable to open clock");
+        if let Some(id) = clock_name_map.get(&idx) {
+            clock_port_map.push(Some(*id));
+        } else {
+            clock.init().expect("Unable to initialize clock");
+            let id = internal_sync_senders.len();
+            clock_port_map.push(Some(id));
+            clock_name_map.insert(idx, id);
+            internal_sync_senders.push(start_clock_task(clock.clone(), system_clock.clone()));
+        }
+        (
+            Some(idx),
+            Box::new(clock) as BoxedClock,
+            match port_config.protocol_version {
+                ProtocolVersion::PTPv2 => InterfaceTimestampMode::HardwarePTPv2All,
+                ProtocolVersion::PTPv1 => InterfaceTimestampMode::HardwarePTPv1All,
+            },
+        )
+    };
+
+    let add_sw_clock = |clock_port_map: &mut Vec<Option<usize>>| {
+        clock_port_map.push(None);
+        (
+            None,
+            system_clock.clone_boxed(),
+            InterfaceTimestampMode::SoftwareAll,
+        )
+    };
+
     for port_config in config.ports {
         let interface = port_config.interface;
         let network_mode = port_config.network_mode;
-        let (port_clock, timestamping) = match port_config.hardware_clock {
-            Some(idx) => {
-                let mut clock = LinuxClock::open_idx(idx).expect("Unable to open clock");
-                if let Some(id) = clock_name_map.get(&idx) {
-                    clock_port_map.push(Some(*id));
-                } else {
-                    clock.init().expect("Unable to initialize clock");
-                    let id = internal_sync_senders.len();
-                    clock_port_map.push(Some(id));
-                    clock_name_map.insert(idx, id);
-                    internal_sync_senders
-                        .push(start_clock_task(clock.clone(), system_clock.clone()));
+        let (bind_phc, port_clock, timestamping) = match port_config.hardware_clock {
+            HardwareClock::Auto => match interface.lookup_phc() {
+                Some(idx) => add_hw_clock(idx, &mut clock_port_map, &port_config),
+                None => {
+                    log::info!("No hardware clock found, falling back to software timestamping");
+                    add_sw_clock(&mut clock_port_map)
                 }
-                (
-                    Box::new(clock) as BoxedClock,
-                    match port_config.protocol_version {
-                        ProtocolVersion::PTPv2 => InterfaceTimestampMode::HardwarePTPv2All,
-                        ProtocolVersion::PTPv1 => InterfaceTimestampMode::HardwarePTPv1All,
-                    }
-                )
+            },
+            HardwareClock::Required => {
+                let idx = interface.lookup_phc().expect("No hardware clock found");
+                add_hw_clock(idx, &mut clock_port_map, &port_config)
             }
-            None => {
-                clock_port_map.push(None);
-                (
-                    system_clock.clone_boxed(),
-                    InterfaceTimestampMode::SoftwareAll,
-                )
-            }
+            HardwareClock::Specific(idx) => add_hw_clock(idx, &mut clock_port_map, &port_config),
+            HardwareClock::None => add_sw_clock(&mut clock_port_map),
         };
 
         let rng = StdRng::from_entropy();
-        let bind_phc = port_config.hardware_clock;
         let port = instance.add_port(
             port_config.into(),
             KalmanConfiguration::default(),
@@ -505,10 +525,16 @@ async fn run(
         // We don't care if isn't anybody on the other side
         let _ = instance_state_sender.send(ObservableInstanceState {
             default_ds: instance.default_ds(),
-            current_ds: instance.current_ds(),
+            current_ds: instance.current_ds(
+                mut_bmca_ports
+                    .iter()
+                    .filter_map(|v| v.port_current_ds_contribution())
+                    .next(),
+            ),
             parent_ds: instance.parent_ds(),
             time_properties_ds: instance.time_properties_ds(),
             path_trace_ds: instance.path_trace_ds(),
+            port_ds: mut_bmca_ports.iter().map(|v| v.port_ds()).collect(),
         });
 
         let mut clock_states = vec![ClockSyncMode::FromSystem; internal_sync_senders.len()];

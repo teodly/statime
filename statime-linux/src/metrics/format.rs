@@ -136,7 +136,19 @@ pub fn format_current_ds(
         Some(Unit::Nanoseconds),
         vec![Measurement {
             labels: labels.clone(),
-            value: current_ds.offset_from_master,
+            value: current_ds.offset_from_master.seconds(),
+        }],
+    )?;
+
+    format_metric(
+        w,
+        "mean_delay",
+        "Packet delay between a Master PTP Instance as calculated by the Slave instance",
+        MetricType::Gauge,
+        Some(Unit::Nanoseconds),
+        vec![Measurement {
+            labels: labels.clone(),
+            value: current_ds.mean_delay.seconds(),
         }],
     )?;
 
@@ -146,8 +158,17 @@ pub fn format_current_ds(
 pub fn format_parent_ds(
     w: &mut impl std::fmt::Write,
     parent_ds: &ParentDS,
-    labels: Vec<(&'static str, String)>,
+    mut labels: Vec<(&'static str, String)>,
 ) -> std::fmt::Result {
+    labels.push((
+        "parent_clock_identity",
+        parent_ds.parent_port_identity.clock_identity.to_string(),
+    ));
+    labels.push((
+        "parent_port_number",
+        parent_ds.parent_port_identity.port_number.to_string(),
+    ));
+
     format_metric(
         w,
         "grandmaster_clock_quality_class",
@@ -254,7 +275,7 @@ pub fn format_time_properties_ds(
     format_metric(
         w,
         "time_traceable",
-        "Wheter the timescale is tracable to a primary reference",
+        "Whether the timescale is traceable to a primary reference",
         MetricType::Gauge,
         None,
         vec![Measurement {
@@ -266,7 +287,7 @@ pub fn format_time_properties_ds(
     format_metric(
         w,
         "frequency_traceable",
-        "Wheter the frequence determining the timescale is tracable to a primary reference",
+        "Whether the frequency determining the timescale is traceable to a primary reference",
         MetricType::Gauge,
         None,
         vec![Measurement {
@@ -278,7 +299,7 @@ pub fn format_time_properties_ds(
     format_metric(
         w,
         "ptp_timescale",
-        "Wheter the timescale of the Grandmaster PTP Instance is PTP",
+        "Whether the timescale of the Grandmaster PTP Instance is PTP",
         MetricType::Gauge,
         None,
         vec![Measurement {
@@ -290,7 +311,7 @@ pub fn format_time_properties_ds(
     format_metric(
         w,
         "time_source",
-        "Wheter the timescale of the Grandmaster PTP Instance is PTP",
+        "The source of time used by the Grandmaster PTP instance",
         MetricType::Gauge,
         None,
         vec![Measurement {
@@ -310,12 +331,12 @@ fn format_path_trace_ds(
     format_metric(
         w,
         "path_trace_enable",
-        "true if path trace options is enabled",
+        "1 if path trace options is enabled, 0 otherwise",
         MetricType::Gauge,
         None,
         vec![Measurement {
             labels: labels.clone(),
-            value: path_trace_ds.enable,
+            value: format_bool!(path_trace_ds.enable),
         }],
     )?;
 
@@ -352,6 +373,57 @@ fn format_path_trace_ds(
     Ok(())
 }
 
+fn format_port_ds(
+    w: &mut impl Write,
+    port_ds: &[statime::observability::port::PortDS],
+    labels: Vec<(&'static str, String)>,
+) -> std::fmt::Result {
+    format_metric(
+        w,
+        "port_state",
+        "The current state of the port",
+        MetricType::Gauge,
+        None,
+        port_ds
+            .iter()
+            .map(|port_ds| {
+                let mut labels = labels.clone();
+                labels.push(("port", format!("{}", port_ds.port_identity.port_number)));
+                Measurement {
+                    labels,
+                    value: port_ds.port_state as u8,
+                }
+            })
+            .collect(),
+    )?;
+
+    format_metric(
+        w,
+        "mean_link_delay",
+        "The current mean link delay of the port",
+        MetricType::Gauge,
+        Some(Unit::Nanoseconds),
+        port_ds
+            .iter()
+            .filter_map(|port_ds| match port_ds.delay_mechanism {
+                statime::observability::port::DelayMechanism::P2P {
+                    mean_link_delay, ..
+                } => {
+                    let mut labels = labels.clone();
+                    labels.push(("port", format!("{}", port_ds.port_identity.port_number)));
+                    Some(Measurement {
+                        labels,
+                        value: mean_link_delay.to_nanos(),
+                    })
+                }
+                _ => None,
+            })
+            .collect(),
+    )?;
+
+    Ok(())
+}
+
 pub fn format_state(w: &mut impl std::fmt::Write, state: &ObservableState) -> std::fmt::Result {
     format_metric(
         w,
@@ -379,6 +451,7 @@ pub fn format_state(w: &mut impl std::fmt::Write, state: &ObservableState) -> st
     format_parent_ds(w, &state.instance.parent_ds, labels.clone())?;
     format_time_properties_ds(w, &state.instance.time_properties_ds, labels.clone())?;
     format_path_trace_ds(w, &state.instance.path_trace_ds, labels.clone())?;
+    format_port_ds(w, &state.instance.port_ds, labels.clone())?;
 
     w.write_str("# EOF\n")?;
     Ok(())

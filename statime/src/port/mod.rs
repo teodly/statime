@@ -15,8 +15,8 @@ use state::PortState;
 
 use self::sequence_id::SequenceIdGenerator;
 pub use crate::datastructures::messages::is_compatible as is_message_buffer_compatible_v2;
-pub use crate::datastructures::messages_v1::is_compatible as is_message_buffer_compatible_v1;
-pub use crate::datastructures::messages::MAX_DATA_LEN;
+pub use crate::datastructures::messages_v1::{is_compatible as is_message_buffer_compatible_v1, MAX_DATA_LEN};
+
 #[cfg(doc)]
 use crate::PtpInstance;
 use crate::{
@@ -30,7 +30,8 @@ use crate::{
         common::PortIdentity,
         messages::{Message, MessageBody},
     },
-    filters::Filter,
+    filters::{Filter, FilterEstimate},
+    observability::{self, port::PortDS},
     ptp_instance::{PtpInstanceState, PtpInstanceStateMutex},
     time::{Duration, Time},
 };
@@ -121,7 +122,7 @@ pub(crate) mod state;
 /// # }
 /// # let (instance_config, time_properties_ds) = unimplemented!();
 /// use rand::thread_rng;
-/// use statime::config::{AcceptAnyMaster, DelayMechanism, PortConfig, ProtocolVersion};
+/// use statime::config::{AcceptAnyMaster, DelayMechanism, PortConfig, ProtocolVersion, PtpMinorVersion};
 /// use statime::filters::BasicFilter;
 /// use statime::PtpInstance;
 /// use statime::time::Interval;
@@ -139,6 +140,7 @@ pub(crate) mod state;
 ///     master_only: false,
 ///     delay_asymmetry: Default::default(),
 ///     protocol_version: ProtocolVersion::PTPv2,
+///     minor_ptp_version: PtpMinorVersion::One,
 /// };
 /// let filter_config = 1.0;
 /// let clock = system::Clock {};
@@ -382,22 +384,37 @@ impl<'a, A: AcceptableMasterList, C: Clock, F: Filter, R: Rng, S: PtpInstanceSta
 
     /// Handle the announce receipt timer going off
     pub fn handle_announce_receipt_timer(&mut self) -> PortActionIterator<'_> {
-        // we didn't hear announce messages from other masters, so become master
-        // ourselves
-        match self.port_state {
-            PortState::Master => (),
-            _ => self.set_forced_port_state(PortState::Master),
-        }
-
-        // Immediately start sending syncs and announces
-        actions![
-            PortAction::ResetAnnounceTimer {
-                duration: core::time::Duration::from_secs(0)
-            },
-            PortAction::ResetSyncTimer {
-                duration: core::time::Duration::from_secs(0)
+        if self
+            .instance_state
+            .with_ref(|state| state.default_ds.slave_only)
+        {
+            // We didn't hear messages from the master anymore, reset to the listening state
+            // since we can't become master.
+            if !matches!(self.port_state, PortState::Listening) {
+                self.set_forced_port_state(PortState::Listening);
             }
-        ]
+
+            // consistent with Port<InBmca>::new()
+            let duration = self.config.announce_duration(&mut self.rng);
+            actions![PortAction::ResetAnnounceReceiptTimer { duration }]
+        } else {
+            // we didn't hear announce messages from other masters, so become master
+            // ourselves
+            match self.port_state {
+                PortState::Master => (),
+                _ => self.set_forced_port_state(PortState::Master),
+            }
+
+            // Immediately start sending syncs and announces
+            actions![
+                PortAction::ResetAnnounceTimer {
+                    duration: core::time::Duration::from_secs(0)
+                },
+                PortAction::ResetSyncTimer {
+                    duration: core::time::Duration::from_secs(0)
+                }
+            ]
+        }
     }
 
     /// Handle the filter update timer going off
@@ -673,6 +690,50 @@ impl<L, A, R, C, F: Filter, S> Port<'_, L, A, R, C, F, S> {
     pub(crate) fn number(&self) -> u16 {
         self.port_identity.port_number
     }
+
+    /// Get a copy of the port dataset of the port
+    pub fn port_ds(&self) -> PortDS {
+        PortDS {
+            port_identity: self.port_identity,
+            port_state: match self.port_state {
+                PortState::Faulty => observability::port::PortState::Faulty,
+                PortState::Listening => observability::port::PortState::Listening,
+                PortState::Master => observability::port::PortState::Master,
+                PortState::Passive => observability::port::PortState::Passive,
+                PortState::Slave(_) => observability::port::PortState::Slave,
+            },
+            log_announce_interval: self.config.announce_interval.as_log_2(),
+            announce_receipt_timeout: self.config.announce_receipt_timeout,
+            log_sync_interval: self.config.sync_interval.as_log_2(),
+            delay_mechanism: match self.config.delay_mechanism {
+                crate::config::DelayMechanism::E2E { interval } => {
+                    observability::port::DelayMechanism::E2E {
+                        log_min_delay_req_interval: interval.as_log_2(),
+                    }
+                }
+                crate::config::DelayMechanism::P2P { interval } => {
+                    observability::port::DelayMechanism::P2P {
+                        log_min_p_delay_req_interval: interval.as_log_2(),
+                        mean_link_delay: self.mean_delay.map(|v| v.into()).unwrap_or_default(),
+                    }
+                }
+            },
+            version_number: 2,
+            minor_version_number: self.config.minor_ptp_version as u8,
+            delay_asymmetry: self.config.delay_asymmetry.into(),
+            master_only: self.config.master_only,
+        }
+    }
+
+    /// If this port is in the slave state, this returns the current estimate
+    /// of the current_ds offset_to_master and mean_delay fields.
+    pub fn port_current_ds_contribution(&self) -> Option<FilterEstimate> {
+        if matches!(self.port_state, PortState::Slave(_)) {
+            Some(self.filter.current_estimates())
+        } else {
+            None
+        }
+    }
 }
 
 impl<'a, A, C, F: Filter, R: Rng, S: PtpInstanceStateMutex> Port<'a, InBmca, A, R, C, F, S> {
@@ -704,6 +765,7 @@ impl<'a, A, C, F: Filter, R: Rng, S: PtpInstanceStateMutex> Port<'a, InBmca, A, 
                 master_only: config.master_only,
                 delay_asymmetry: config.delay_asymmetry,
                 protocol_version: config.protocol_version,
+                minor_ptp_version: config.minor_ptp_version,
             },
             filter_config,
             clock,
@@ -735,7 +797,9 @@ mod tests {
 
     use super::*;
     use crate::{
-        config::{AcceptAnyMaster, DelayMechanism, InstanceConfig, TimePropertiesDS},
+        config::{
+            AcceptAnyMaster, DelayMechanism, InstanceConfig, PtpMinorVersion, TimePropertiesDS,
+        },
         datastructures::datasets::{InternalDefaultDS, InternalParentDS, PathTraceDS},
         filters::BasicFilter,
         time::{Duration, Interval, Time},
@@ -784,6 +848,7 @@ mod tests {
                 master_only: false,
                 delay_asymmetry: Duration::ZERO,
                 protocol_version: ProtocolVersion::PTPv2,
+                minor_ptp_version: PtpMinorVersion::One,
             },
             0.25,
             TestClock,
@@ -812,6 +877,7 @@ mod tests {
                 master_only: false,
                 delay_asymmetry: Duration::ZERO,
                 protocol_version: ProtocolVersion::PTPv2,
+                minor_ptp_version: PtpMinorVersion::One,
             },
             0.25,
             TestClock,
@@ -840,6 +906,7 @@ mod tests {
                 master_only: false,
                 delay_asymmetry: Duration::ZERO,
                 protocol_version: ProtocolVersion::PTPv2,
+                minor_ptp_version: PtpMinorVersion::One,
             },
             filter_config,
             TestClock,

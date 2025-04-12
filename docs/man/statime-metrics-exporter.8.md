@@ -1,15 +1,15 @@
 <!-- ---
-title: STATIME(8) statime 0.4.0 | statime
+title: STATIME-METRICS-EXPORTER(8) statime 0.2.2 | statime
 --- -->
 
 # NAME
 
-`statime` - The Statime PTP daemon for linux
+`statime-metrics-exporter` - Prometheus/OpenMetrics exporter for the Statime PTP daemon
 
 # SYNOPSIS
-`statime` [`-c` *path*] \
-`statime` `-h` \
-`statime` `-V`
+`statime-metrics-exporter` [`-c` *path*] \
+`statime-metrics-exporter` `-h` \
+`statime-metrics-exporter` `-V`
 
 # DESCRIPTION
 
@@ -28,4 +28,4 @@ title: STATIME(8) statime 0.4.0 | statime
 
 # SEE ALSO
 
-[statime-metrics-exporter(8)](statime-metrics-exporter.8.md), [statime.toml(5)](statime.toml.5.md)
+[statime(8)](statime.8.md), [statime.toml(5)](statime.toml.5.md)
