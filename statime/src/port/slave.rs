@@ -677,6 +677,7 @@ impl<A, C: Clock, F: Filter, R: Rng, S: PtpInstanceStateMutex> Port<'_, Running,
         &mut self,
         log_min_delay_req_interval: Interval,
     ) -> PortActionIterator {
+        log::debug!("send_e2e_delay_request interval: {log_min_delay_req_interval:?}");
         match self.port_state {
             PortState::Slave(ref mut state) => {
                 log::debug!("Starting new delay measurement");
@@ -696,12 +697,14 @@ impl<A, C: Clock, F: Filter, R: Rng, S: PtpInstanceStateMutex> Port<'_, Running,
                     }
                     ProtocolVersion::PTPv1 => {
                         if self.instance_state.with_ref(|state| state.parent_ds.grandmaster_v1.is_none() ) {
-                            return actions![];
+                            log::warn!("grandmaster unknown");
+                            Ok(0)
+                        } else {
+                            let delay_req = self.instance_state.with_ref(|state| {
+                                MessageV1::delay_req(&state, self.port_identity, delay_id)
+                            });
+                            delay_req.serialize(&mut self.packet_buffer)
                         }
-                        let delay_req = self.instance_state.with_ref(|state| {
-                            MessageV1::delay_req(&state, self.port_identity, delay_id)
-                        });
-                        delay_req.serialize(&mut self.packet_buffer)
                     }
                 };
 
@@ -709,7 +712,7 @@ impl<A, C: Clock, F: Filter, R: Rng, S: PtpInstanceStateMutex> Port<'_, Running,
                     Ok(length) => length,
                     Err(error) => {
                         log::error!("Could not serialize delay request: {:?}", error);
-                        return actions![];
+                        0
                     }
                 };
 
@@ -725,16 +728,22 @@ impl<A, C: Clock, F: Filter, R: Rng, S: PtpInstanceStateMutex> Port<'_, Running,
                     .as_core_duration()
                     .mul_f64(factor);
 
-                actions![
-                    PortAction::ResetDelayRequestTimer { duration },
-                    PortAction::SendEvent {
-                        context: TimestampContext {
-                            inner: TimestampContextInner::DelayReq { id: delay_id },
-                        },
-                        data: &self.packet_buffer[..message_length],
-                        link_local: false,
-                    }
-                ]
+                if message_length > 0 {
+                    actions![
+                        PortAction::ResetDelayRequestTimer { duration },
+                        PortAction::SendEvent {
+                            context: TimestampContext {
+                                inner: TimestampContextInner::DelayReq { id: delay_id },
+                            },
+                            data: &self.packet_buffer[..message_length],
+                            link_local: false,
+                        }
+                    ]
+                } else {
+                    actions![
+                        PortAction::ResetDelayRequestTimer { duration }
+                    ]
+                }
             }
             _ => actions![],
         }
