@@ -1,10 +1,19 @@
-# Statime
+# Statime - Inferno fork
 
-[![codecov](https://codecov.io/gh/pendulum-project/statime/branch/main/graph/badge.svg?token=QCO6NKS64J)](https://codecov.io/gh/pendulum-project/statime)
 [![book](https://shields.io/badge/manual-main-blue)](https://docs.statime.pendulum-project.org/)
 [![book](https://shields.io/badge/docs.rs-statime-green)](https://docs.statime.pendulum-project.org/api/statime/)
 
 Statime is a library providing an implementation of PTP version 2.1 (IEEE1588-2019). It provides all the building blocks to setup PTP ordinary and boundary clocks.
+
+This is a fork intended for use in audiovisual networks, Dante in particular. [Inferno-AoIP](https://github.com/teodly/inferno) (unofficial implementation of Dante protocol) requires this fork of Statime to be running alongside Inferno to receive PTP clock. Comparing to upstream, it has the following features:
+
+* PTPv1 slave (follower) support
+* [usrvclock protocol](https://gitlab.com/lumifaza/usrvclock) for creating virtual clocks on machines without PHC
+* exporting the master clock information
+
+All these changes could be upstreamed but it is [a long way to go](https://github.com/pendulum-project/statime/pull/602), especially with properly supporting entirely different protocol (PTPv1) with its own specification.
+
+## Original description
 
 It is designed to be able to work with many different underlying platforms, including embedded targets. This does mean that it cannot use the standard library and platform specific libraries to interact with the system clock and to access the network. That needs to be provided by the user of the library.
 
