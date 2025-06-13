@@ -197,8 +197,8 @@ impl<E: ClockOverlayExporter + core::fmt::Debug> PortTimestampToTime
     }
 }
 
-impl<E: ClockOverlayExporter + core::fmt::Debug> PortTimestampToTime
-    for SharedClock<OverlayClock<LinuxClock, E>>
+impl<T: PortTimestampToTime + Clock> PortTimestampToTime
+    for SharedClock<T>
 {
     fn port_timestamp_to_time(&self, ts: timestamped_socket::socket::Timestamp) -> Time {
         self.0.lock().unwrap().port_timestamp_to_time(ts)
