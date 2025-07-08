@@ -13,6 +13,6 @@ interface = "enp0s31f6"
 network-mode = "ipv4" #can also be ipv6 or ethernet
 
 # hardware-clock = auto | required | none | index (default: auto)
-hardware-clock = "none"
+hardware-clock = "auto"
 
 protocol-version = "PTPv1"
