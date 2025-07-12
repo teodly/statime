@@ -15,6 +15,35 @@ use timestamped_socket::interface::InterfaceName;
 
 use crate::tracing::LogLevel;
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum SystemClockType {
+    #[default]
+    TAI,
+    Monotonic,
+    MonotonicRaw,
+    MonotonicCoarse,
+}
+
+impl<'de> Deserialize<'de> for SystemClockType {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        use serde::de::Error;
+
+        let raw: String = Deserialize::deserialize(deserializer)?;
+        let s = raw.to_ascii_uppercase().replace('-', "_");
+
+        match s.as_str() {
+            "TAI" => Ok(SystemClockType::TAI),
+            "MONOTONIC" => Ok(SystemClockType::Monotonic),
+            "MONOTONIC_RAW" => Ok(SystemClockType::MonotonicRaw),
+            "MONOTONIC_COARSE" => Ok(SystemClockType::MonotonicCoarse),
+            _ => Err(D::Error::custom("invalid system clock type"))
+        }
+    }
+}
+
 #[derive(Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case", deny_unknown_fields)]
 pub struct Config {
@@ -40,6 +69,8 @@ pub struct Config {
     pub observability: ObservabilityConfig,
     #[serde(default)]
     pub virtual_system_clock: bool,
+    #[serde(default)]
+    pub virtual_system_clock_base: SystemClockType,
     #[serde(default)]
     pub usrvclock_export: bool,
     #[serde(default = "default_usrvclock_path")]
@@ -342,7 +373,7 @@ mod tests {
     use timestamped_socket::interface::InterfaceName;
 
     use crate::{
-        config::{HardwareClock, ObservabilityConfig},
+        config::{SystemClockType, HardwareClock, ObservabilityConfig},
         tracing::LogLevel,
     };
 
@@ -382,6 +413,7 @@ interface = "enp0s31f6"
             ports: vec![expected_port],
             observability: ObservabilityConfig::default(),
             virtual_system_clock: false,
+            virtual_system_clock_base: SystemClockType::TAI,
             usrvclock_export: false,
             usrvclock_path: usrvclock::DEFAULT_SERVER_SOCKET_PATH.into(),
         };

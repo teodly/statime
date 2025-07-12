@@ -22,6 +22,13 @@ impl LinuxClock {
         is_tai: true,
     };
 
+    pub fn from_clockid(clockid: libc::clockid_t) -> Self {
+        Self {
+            clock: UnixClock::from_clockid(clockid),
+            is_tai: clockid == libc::CLOCK_TAI
+        }
+    }
+
     pub fn open(path: impl AsRef<Path>) -> std::io::Result<Self> {
         let clock = UnixClock::open(path)?;
 
@@ -60,11 +67,13 @@ impl LinuxClock {
         // The clock crate's system offset gives the T1 and T3 timestamps on the
         // CLOCK_REALTIME timescale which is UTC, not TAI, so we need to correct
         // here.
+        // FIXME: really?
         self.clock.system_offset().map(|(mut t1, t2, mut t3)| {
             use clock_steering::Clock;
             let tai_offset = UnixClock::CLOCK_REALTIME.get_tai().unwrap();
             t1.seconds += tai_offset as libc::time_t;
             t3.seconds += tai_offset as libc::time_t;
+            // FIXME: really?
             (
                 clock_timestamp_to_time(t1),
                 clock_timestamp_to_time(t2),
@@ -188,8 +197,8 @@ impl PortTimestampToTime for LinuxClock {
     }
 }
 
-impl<E: ClockOverlayExporter + core::fmt::Debug> PortTimestampToTime
-    for OverlayClock<LinuxClock, E>
+impl<T: PortTimestampToTime + Clock, E: ClockOverlayExporter + core::fmt::Debug> PortTimestampToTime
+    for OverlayClock<T, E>
 {
     fn port_timestamp_to_time(&self, ts: timestamped_socket::socket::Timestamp) -> Time {
         let roclock_time = self.underlying().port_timestamp_to_time(ts);

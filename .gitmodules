@@ -1,3 +1,6 @@
 [submodule "timestamped-socket"]
 	path = timestamped-socket
 	url = https://github.com/teodly/timestamped-socket
+[submodule "clock-steering"]
+	path = clock-steering
+	url = https://github.com/teodly/clock-steering

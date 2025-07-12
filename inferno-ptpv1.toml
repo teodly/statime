@@ -5,6 +5,7 @@ sdo-id = 0
 domain = 0
 priority1 = 251 # Dante hardware devices use 249 in PTPv2
 virtual-system-clock = true
+virtual-system-clock-base = "monotonic_raw"
 usrvclock-export = true
 
 # Add one of these per network interface in your system

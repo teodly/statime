@@ -48,7 +48,7 @@ fixed = "1.24"
 libm = "0.2.8"
 auto_impl = "1.2.0"
 
-clock-steering = "0.2.0"
+clock-steering = { path = "./clock-steering" }
 timestamped-socket = { path = "./timestamped-socket" }
 
 

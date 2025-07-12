@@ -37,6 +37,14 @@ impl ClockOverlayExporter for DoNotExport {
 pub struct CallbackExporter(std::boxed::Box<dyn FnMut(&ClockOverlay) + Send>);
 
 #[cfg(feature = "std")]
+impl CallbackExporter {
+    /// Dummy exporter
+    pub fn no_op() -> Self {
+        Self::from(|_: &ClockOverlay| {})
+    }
+}
+
+#[cfg(feature = "std")]
 impl ClockOverlayExporter for CallbackExporter {
     fn export(&mut self, overlay: &ClockOverlay) {
         (self.0)(overlay);

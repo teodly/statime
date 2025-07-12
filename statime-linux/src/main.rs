@@ -1,9 +1,5 @@
 use std::{
-    collections::HashMap,
-    future::Future,
-    path::PathBuf,
-    pin::{pin, Pin},
-    sync::RwLock,
+    collections::HashMap, future::Future, path::PathBuf, pin::{pin, Pin}, sync::RwLock
 };
 
 use clap::Parser;
@@ -21,7 +17,7 @@ use statime::{
 };
 use statime_linux::{
     clock::{LinuxClock, PortTimestampToTime},
-    config::{HardwareClock, PortConfig, ProtocolVersion},
+    config::{HardwareClock, PortConfig, ProtocolVersion, SystemClockType},
     initialize_logging_parse_config,
     observer::ObservableInstanceState,
     socket::{
@@ -44,18 +40,28 @@ trait PortClock:
 {
     fn clone_box(&self) -> Box<dyn PortClock>;
 }
+type BoxedClock = Box<dyn PortClock>;
+
 impl PortClock for LinuxClock {
     fn clone_box(&self) -> Box<dyn PortClock> {
         Box::new(self.clone())
     }
 }
-impl PortClock for SharedClock<OverlayClock<LinuxClock, CallbackExporter>> {
+
+type SharedOverlayClock = SharedClock<OverlayClock<LinuxClock, CallbackExporter>>;
+impl PortClock for SharedOverlayClock {
     fn clone_box(&self) -> Box<dyn PortClock> {
         Box::new(self.clone())
     }
 }
-type BoxedClock = Box<dyn PortClock>;
-type SharedOverlayClock = SharedClock<OverlayClock<LinuxClock, CallbackExporter>>;
+
+type DualLayerOverlayClock = SharedClock<OverlayClock<SharedClock<OverlayClock<LinuxClock, CallbackExporter>>, CallbackExporter>>;
+impl PortClock for DualLayerOverlayClock {
+    fn clone_box(&self) -> Box<dyn PortClock> {
+        Box::new(self.clone())
+    }
+}
+
 
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
@@ -116,12 +122,14 @@ impl Future for Timer {
 enum SystemClock {
     Linux(LinuxClock),
     Overlay(SharedOverlayClock),
+    DualLayer(DualLayerOverlayClock),
 }
 impl SystemClock {
     fn clone_boxed(&self) -> BoxedClock {
         match self {
             Self::Linux(clock) => Box::new(clock.clone()),
             Self::Overlay(clock) => Box::new(clock.clone()),
+            Self::DualLayer(clock) => Box::new(clock.clone()),
         }
     }
 }
@@ -141,13 +149,29 @@ fn start_clock_task(
 
     match system_clock {
         SystemClock::Linux(system_clock) => {
-            tokio::spawn(clock_task(clock, system_clock, None, mode_receiver));
+            tokio::spawn(clock_task(clock, system_clock, |t1, t3| (t1, t3), mode_receiver));
         }
         SystemClock::Overlay(overlay_clock) => {
             tokio::spawn(clock_task(
                 clock,
                 overlay_clock.clone(),
-                Some(overlay_clock),
+                move |raw_t1, raw_t3| -> (Time, Time) {
+                    let overlay = overlay_clock.0.lock().expect("shared clock lock is tainted");
+                    (overlay.time_from_underlying(raw_t1), overlay.time_from_underlying(raw_t3))
+                },
+                mode_receiver,
+            ));
+        }
+        SystemClock::DualLayer(overlay_clock) => {
+            tokio::spawn(clock_task(
+                clock,
+                overlay_clock.clone(),
+                move |raw_t1, raw_t3| -> (Time, Time) {
+                    let outer_overlay = overlay_clock.0.lock().expect("outer shared clock lock is tainted");
+                    let inner_overlay = outer_overlay.underlying().0.lock().expect("inner shared clock lock is tainted");
+                    let (imed_t1, imed_t3) = (inner_overlay.time_from_underlying(raw_t1), inner_overlay.time_from_underlying(raw_t3));
+                    (outer_overlay.time_from_underlying(imed_t1), outer_overlay.time_from_underlying(imed_t3))
+                },
                 mode_receiver,
             ));
         }
@@ -159,7 +183,7 @@ fn start_clock_task(
 async fn clock_task<C: Clock<Error = impl core::fmt::Debug>>(
     mut clock: LinuxClock,
     mut system_clock: C,
-    system_clock_overlay: Option<SharedOverlayClock>,
+    convert_system_timestamps: impl Fn(Time, Time) -> (Time, Time),
     mut mode_receiver: tokio::sync::watch::Receiver<ClockSyncMode>,
 ) {
     let mut measurement_timer = pin!(Timer::new());
@@ -174,13 +198,7 @@ async fn clock_task<C: Clock<Error = impl core::fmt::Debug>>(
         tokio::select! {
             () = &mut measurement_timer => {
                 let (raw_t1, t2, raw_t3) = clock.system_offset().expect("Unable to determine offset from system clock");
-                let (t1, t3) = match &system_clock_overlay {
-                    Some(shared) => {
-                        let overlay = shared.0.lock().expect("shared clock lock is tainted");
-                        (overlay.time_from_underlying(raw_t1), overlay.time_from_underlying(raw_t3))
-                    },
-                    None => (raw_t1, raw_t3)
-                };
+                let (t1, t3) = convert_system_timestamps(raw_t1, raw_t3);
 
                 log::debug!("Interclock measurement: {} {} {}", t1, t2, t3);
 
@@ -244,6 +262,64 @@ async fn clock_task<C: Clock<Error = impl core::fmt::Debug>>(
     }
 }
 
+async fn intermediate_clock_task(
+    source: LinuxClock,
+    mut destination: SharedOverlayClock,
+) {
+    let mut measurement_timer = pin!(Timer::new());
+    let mut update_timer = pin!(Timer::new());
+
+    measurement_timer.as_mut().reset(std::time::Duration::ZERO);
+
+    let mut filter = KalmanFilter::new(KalmanConfiguration::default());
+
+    loop {
+        tokio::select! {
+            () = &mut measurement_timer => {
+                let (t1, t2, t3) = {
+                    let dst_locked = destination.0.lock().expect("destination clock lock tainted");
+                    let t1 = dst_locked.now();
+                    let t2 = source.now();
+                    let t3 = dst_locked.now();
+                    (t1, t2, t3)
+                };
+
+                log::debug!("Intermediate interclock measurement: {} {} {}", t1, t2, t3);
+
+                let delay = (t3-t1)/2;
+                let offset_a = t2 - t1;
+                let offset_b = t3 - t2;
+
+                if delay.nanos() < 0 || delay.nanos() > 10_000_000 {
+                    log::warn!("Intermediate interclock measurement: rejecting delay {delay}");
+                    measurement_timer.as_mut().reset(std::time::Duration::from_millis(100));
+                } else {
+                    let m = Measurement {
+                        event_time: t1+delay,
+                        offset: Some(offset_b - delay),
+                        delay: Some(delay),
+                        peer_delay: None,
+                        raw_sync_offset: Some(offset_b),
+                        raw_delay_offset: Some(-offset_a),
+                    };
+                    let update = filter.measurement(m, &mut destination);
+
+                    if let Some(timeout) = update.next_update {
+                        update_timer.as_mut().reset(timeout);
+                    }
+                    measurement_timer.as_mut().reset(std::time::Duration::from_millis(250));
+                }
+            }
+            () = &mut update_timer => {
+                let update = filter.update(&mut destination);
+                if let Some(timeout) = update.next_update {
+                    update_timer.as_mut().reset(timeout);
+                }
+            }
+        }
+    }
+}
+
 #[tokio::main]
 async fn main() {
     actual_main().await;
@@ -279,6 +355,13 @@ async fn actual_main() {
         TimePropertiesDS::new_arbitrary_time(false, false, TimeSource::InternalOscillator);
 
     let system_clock = if config.virtual_system_clock {
+        let base_clockid = match config.virtual_system_clock_base {
+            SystemClockType::TAI => libc::CLOCK_TAI,
+            SystemClockType::Monotonic => libc::CLOCK_MONOTONIC,
+            SystemClockType::MonotonicRaw => libc::CLOCK_MONOTONIC_RAW,
+            SystemClockType::MonotonicCoarse => libc::CLOCK_MONOTONIC_COARSE,
+        };
+        
         let exporter = if config.usrvclock_export {
             let mut server = usrvclock::Server::new(config.usrvclock_path.clone())
                 .expect("failed to create usrvclock server");
@@ -287,7 +370,7 @@ async fn actual_main() {
                 let last_sync: i128 = overlay.last_sync.nanos().lossy_into();
                 let shift: i128 = overlay.shift.nanos().lossy_into();
                 let to_share = usrvclock::ClockOverlay {
-                    clock_id: libc::CLOCK_TAI as i64,
+                    clock_id: base_clockid as i64,
                     last_sync: last_sync as i64,
                     shift: shift as i64,
                     freq_scale: overlay.freq_scale,
@@ -295,10 +378,18 @@ async fn actual_main() {
                 server.send(to_share)
             })
         } else {
-            CallbackExporter::from(|_: &statime::overlay_clock::ClockOverlay| {})
+            CallbackExporter::no_op()
         };
-        let overlay_clock = OverlayClock::new(LinuxClock::CLOCK_TAI, exporter);
-        SystemClock::Overlay(SharedClock::new(overlay_clock))
+
+        if config.virtual_system_clock_base == SystemClockType::TAI {
+            let overlay_clock = OverlayClock::new(LinuxClock::CLOCK_TAI, exporter);
+            SystemClock::Overlay(SharedClock::new(overlay_clock))
+        } else {
+            let inner_overlay = SharedClock::new(OverlayClock::new(LinuxClock::CLOCK_TAI, CallbackExporter::no_op()));
+            tokio::spawn(intermediate_clock_task(LinuxClock::from_clockid(base_clockid), inner_overlay.clone()));
+            let outer_overlay = OverlayClock::new(inner_overlay, exporter);
+            SystemClock::DualLayer(SharedClock::new(outer_overlay))
+        }
     } else {
         SystemClock::Linux(LinuxClock::CLOCK_TAI)
     };

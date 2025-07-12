@@ -1,0 +1,61 @@
+Option 1:
+
+system_clock = overlay(TAI)
+exported_clock = overlay(MONOTONIC)
+
+port timestamps: REALTIME -> TAI -port_timestamp_to_time-> system_clock
+
+additional clock_task: sync system_clock -> exported_clock
+
+why not?
+because REALTIME may jump and we won't notice it and send bullshit data if we're master
+
+
+
+Option 2:
+
+system_clock = exported_clock = overlay(MONOTONIC)
+
+port timestamps: REALTIME -> TAI -port_timestamp_to_time-> virtual_monotonic -> assume that it's MONOTONIC (with checks) -port_timestamp_to_time-> system_clock
+
+
+HW TS:
+    phc.port_timestamp_to_time -> what we want
+
+    ----
+
+    phc.system_offset() -> returns something in REALTIME...
+
+    what to do?
+    we can either do timestamp sandwitching in userspace and hope for luck,
+    or convert these timestamps into virtual_monotonic (easy because it is based on TAI) and then into our system_clock, and hope for luck, too, because virtual_monotonic clock task also needs userspace sandwitching!
+
+    the second option makes it easier to delegate userspace sandwitching to realtime thread, there will be only one - syncing MONOTONIC -> virtual_monotonic
+
+    so...
+    phc.system_offset() returns phc, REALTIME
+    phc is what we want
+    REALTIME needs to be converted to MONOTONIC, easy: virtual_monotonic.time_from_underlying
+    and then to system_clock
+
+
+SW TS:
+    OverlayClock(MONOTONIC).port_timestamp_to_time
+        MONOTONIC.port_timestamp_to_time -> NO it won't work, port timestamps are in REALTIME
+    
+    OverlayClock(virtual_monotonic).port_timestamp_to_time
+        OverlayClock(TAI).port_timestamp_to_time
+            TAI.port_timestamp_to_time
+                take REALTIME, shift to TAI
+    
+    ----
+
+    no need for additional clock_task
+
+
+intermediate_clock_task:
+    we want to ALWAYS sync real MONOTONIC -> virtual_monotonic
+
+
+how to convert TAI to MONOTONIC:
+virtual_monotonic = overlay(TAI)
