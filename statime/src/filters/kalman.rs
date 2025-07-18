@@ -163,7 +163,7 @@ impl MeasurementErrorEstimator {
     }
 
     fn insert_entry(&mut self, entry: f64) {
-        log::info!("New entry {}", entry * 1e9);
+        log::trace!("New entry {}", entry * 1e9);
         self.data[self.next_idx] = entry;
         self.next_idx = (self.next_idx + 1) % self.data.len();
         self.fill = (self.fill + 1).min(self.data.len())
@@ -182,7 +182,7 @@ impl MeasurementErrorEstimator {
                         sync_offset.seconds() - delay_offset.seconds()
                             + (time - m.event_time).seconds() * estimated_frequency,
                     );
-                    log::info!(
+                    log::trace!(
                         "New uncertainty estimate: {}ns",
                         self.measurement_variance(config).sqrt() * 1e9,
                     );
@@ -201,7 +201,7 @@ impl MeasurementErrorEstimator {
                         sync_offset.seconds() - delay_offset.seconds()
                             + (m.event_time - time).seconds() * estimated_frequency,
                     );
-                    log::info!(
+                    log::trace!(
                         "New uncertainty estimate: {}ns",
                         self.measurement_variance(config).sqrt() * 1e9,
                     );
@@ -261,7 +261,7 @@ impl InnerFilter {
     }
 
     fn progress_filtertime(&mut self, time: Time, wander: f64, config: &KalmanConfiguration) {
-        debug_assert!(time >= self.filter_time);
+        //debug_assert!(time >= self.filter_time);
         if time < self.filter_time {
             return;
         }
@@ -656,7 +656,7 @@ impl KalmanFilter {
                     self.wander,
                     &self.config,
                 );
-                log::info!(
+                log::trace!(
                     "Steered frequency by {}ppm (target: {}ppm)",
                     error_ppm,
                     target
@@ -676,7 +676,7 @@ impl KalmanFilter {
     }
 
     fn display_state(&self) {
-        log::info!(
+        log::trace!(
             "Estimated offset {}ns+-{}ns, freq {}+-{}, delay {}+-{}",
             self.running_filter.offset() * 1e9,
             self.running_filter.offset_uncertainty(&self.config) * 1e9,
@@ -713,7 +713,7 @@ impl KalmanFilter {
     }
 
     fn wander_score_update(&mut self, uncertainty: f64, prediction: f64, actual: f64) {
-        log::info!("Wander uncertainty: {}ns", uncertainty.sqrt() * 1e9);
+        log::trace!("Wander uncertainty: {}ns", uncertainty.sqrt() * 1e9);
         if self.wander_measurement_error
             > 10.0
                 * self
@@ -727,7 +727,7 @@ impl KalmanFilter {
                 .measurement_variance(&self.config)
                 .sqrt()
         } else if uncertainty.sqrt() > 10.0 * self.wander_measurement_error {
-            log::info!(
+            log::trace!(
                 "Wander update predict: {}ns, actual: {}ns",
                 prediction * 1e9,
                 actual * 1e9
@@ -736,7 +736,7 @@ impl KalmanFilter {
                 - chi_1(
                     sqr(actual - prediction) / (uncertainty + sqr(self.wander_measurement_error)),
                 );
-            log::info!("p: {}", p);
+            log::trace!("p: {}", p);
             if p < self.config.precision_low_probability {
                 self.wander_score = self.wander_score.saturating_sub(1);
             } else if p > self.config.precision_high_probability {
@@ -744,7 +744,7 @@ impl KalmanFilter {
             } else {
                 self.wander_score = self.wander_score - self.wander_score.signum();
             }
-            log::info!("Wander update");
+            log::trace!("Wander update");
             self.wander_filter = self.running_filter.clone();
             self.wander_measurement_error = self
                 .measurement_error_estimator
@@ -764,16 +764,16 @@ impl KalmanFilter {
             let (prediction, uncertainty) = self.wander_filter.predict_delay_offset(&self.config);
             self.wander_score_update(uncertainty, prediction, delay_offset.seconds());
         }
-        log::info!("wander score: {}", self.wander_score);
+        log::trace!("wander score: {}", self.wander_score);
         if self.wander_score < -(self.config.precision_hysteresis as i8) {
             self.wander /= 4.0;
             self.wander_score = 0;
-            log::info!("Updated wander estimate: {:e}", self.wander);
+            log::trace!("Updated wander estimate: {:e}", self.wander);
         }
         if self.wander_score > (self.config.precision_hysteresis as i8) {
             self.wander *= 4.0;
             self.wander_score = 0;
-            log::info!("Updated wander estimate: {:e}", self.wander);
+            log::trace!("Updated wander estimate: {:e}", self.wander);
         }
     }
 

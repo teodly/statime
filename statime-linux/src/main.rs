@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap, future::Future, path::PathBuf, pin::{pin, Pin}, sync::RwLock
+    collections::HashMap, future::Future, path::PathBuf, pin::{pin, Pin}, sync::{Arc, Mutex, RwLock}
 };
 
 use clap::Parser;
@@ -12,7 +12,7 @@ use statime::{
         InBmca, Measurement, Port, PortAction, PortActionIterator,
         TimestampContext, MAX_DATA_LEN,
     },
-    time::Time,
+    time::{Duration, Time},
     Clock, PtpInstance, PtpInstanceState, SharedClock,
 };
 use statime_linux::{
@@ -200,11 +200,13 @@ async fn clock_task<C: Clock<Error = impl core::fmt::Debug>>(
                 let (raw_t1, t2, raw_t3) = clock.system_offset().expect("Unable to determine offset from system clock");
                 let (t1, t3) = convert_system_timestamps(raw_t1, raw_t3);
 
-                log::debug!("Interclock measurement: {} {} {}", t1, t2, t3);
+                //log::debug!("Interclock measurement: {} {} {}", t1, t2, t3);
 
                 let delay = (t3-t1)/2;
                 let offset_a = t2 - t1;
                 let offset_b = t3 - t2;
+
+                log::debug!("Interclock measurement: diff {} delay {delay}", t1+delay-t2);
 
                 let update = match current_mode {
                     ClockSyncMode::FromSystem => {
@@ -272,6 +274,7 @@ async fn intermediate_clock_task(
     measurement_timer.as_mut().reset(std::time::Duration::ZERO);
 
     let mut filter = KalmanFilter::new(KalmanConfiguration::default());
+    let mut allow_jump_after = source.now();
 
     loop {
         tokio::select! {
@@ -284,18 +287,22 @@ async fn intermediate_clock_task(
                     (t1, t2, t3)
                 };
 
-                log::debug!("Intermediate interclock measurement: {} {} {}", t1, t2, t3);
+                //log::debug!("Intermediate interclock measurement: {} {} {}", t1, t2, t3);
 
                 let delay = (t3-t1)/2;
                 let offset_a = t2 - t1;
                 let offset_b = t3 - t2;
+                let event_time = t1+delay;
+                //let diff_abs = (t2 - event_time).nanos().saturating_abs();
 
-                if delay.nanos() < 0 || delay.nanos() > 10_000_000 {
+                log::debug!("Intermediate interclock measurement: diff {} delay {delay}", t1+delay-t2);
+
+                if delay.nanos() < 0 || delay.nanos() > 1_000_000 {
                     log::warn!("Intermediate interclock measurement: rejecting delay {delay}");
                     measurement_timer.as_mut().reset(std::time::Duration::from_millis(100));
                 } else {
                     let m = Measurement {
-                        event_time: t1+delay,
+                        event_time,
                         offset: Some(offset_b - delay),
                         delay: Some(delay),
                         peer_delay: None,
@@ -318,6 +325,12 @@ async fn intermediate_clock_task(
             }
         }
     }
+}
+
+struct ClockExportGuard {
+    pub curr_overlay: Option<usrvclock::ClockOverlay>,
+    pub monotonic_clock: LinuxClock,
+    pub grace_period_until: Option<Time>,
 }
 
 #[tokio::main]
@@ -361,6 +374,15 @@ async fn actual_main() {
             SystemClockType::MonotonicRaw => libc::CLOCK_MONOTONIC_RAW,
             SystemClockType::MonotonicCoarse => libc::CLOCK_MONOTONIC_COARSE,
         };
+        let guard = if config.virtual_system_clock_base == SystemClockType::TAI && config.usrvclock_export {
+            None
+        } else {
+            Some(Arc::new(Mutex::new(ClockExportGuard {
+                curr_overlay: None,
+                monotonic_clock: LinuxClock::from_clockid(libc::CLOCK_MONOTONIC_COARSE),
+                grace_period_until: None,
+            })))
+        };
         
         let exporter = if config.usrvclock_export {
             let mut server = usrvclock::Server::new(config.usrvclock_path.clone())
@@ -369,13 +391,57 @@ async fn actual_main() {
                 use fixed::traits::LossyInto;
                 let last_sync: i128 = overlay.last_sync.nanos().lossy_into();
                 let shift: i128 = overlay.shift.nanos().lossy_into();
-                let to_share = usrvclock::ClockOverlay {
+                let new_overlay = usrvclock::ClockOverlay {
                     clock_id: base_clockid as i64,
                     last_sync: last_sync as i64,
                     shift: shift as i64,
                     freq_scale: overlay.freq_scale,
                 };
-                server.send(to_share)
+                let mut can_send = true;
+                if let Some(guard) = guard.as_ref() {
+                    can_send = false;
+                    let mut guard = guard.lock().unwrap();
+
+                    // First check whether change is too abrupt
+                    if let Some(last_overlay) = guard.curr_overlay.as_ref() {
+                        //let diff = new_overlay.shift.wrapping_sub(last_overlay.shift);
+                        let now = new_overlay.now_underlying_ns();
+                        let diff = new_overlay.underlying_to_overlay_ns(now)
+                            .wrapping_sub(last_overlay.underlying_to_overlay_ns(now));
+                        if diff.saturating_abs() < 1_000_000 {
+                            if guard.grace_period_until.is_some() {
+                                log::info!("GUARD: clock back to normal after abrupt shift change, sending new overlay");
+                            }
+                            can_send = true;
+                        } else {
+                            log::warn!("GUARD: detected abrupt change: {diff} ns, delaying send");
+                        }
+                    }
+
+                    // If change is too abrupt or we didn't yet have confirmed good overlay, wait the grace period
+                    if !can_send {
+                        let now = guard.monotonic_clock.now();
+                        if let Some(wait_until) = guard.grace_period_until {
+                            if now > wait_until {
+                                log::info!("GUARD: grace period ended, sending new overlay");
+                                can_send = true;
+                            } else {
+                                log::debug!("GUARD: waiting");
+                            }
+                        } else {
+                            log::debug!("GUARD: starting grace period");
+                            guard.grace_period_until = Some(now + Duration::from_nanos(5_000_000_000));
+                        }
+                    }
+
+                    if can_send {
+                        guard.grace_period_until = None;
+                        guard.curr_overlay = Some(new_overlay.clone());
+                    }
+                }
+                if can_send {
+                    server.send(new_overlay);
+                }
             })
         } else {
             CallbackExporter::no_op()
