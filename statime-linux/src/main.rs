@@ -987,7 +987,7 @@ async fn handle_actions<A: NetworkAddress + PtpTargetAddress>(
                 link_local,
             } => {
                 // send timestamp of the send
-                let time = event_socket
+                let time = match event_socket
                     .send_to(
                         data,
                         if link_local {
@@ -997,7 +997,14 @@ async fn handle_actions<A: NetworkAddress + PtpTargetAddress>(
                         },
                     )
                     .await
-                    .expect("Failed to send event message");
+                {
+                    Ok(time) => time,
+                    // e.g. the interface is down: drop the message, the announce receipt timeout copes
+                    Err(e) => {
+                        log::warn!("Failed to send event message: {e}");
+                        continue;
+                    }
+                };
 
                 // anything we send later will have a later pending (send) timestamp
                 if let Some(time) = time {
@@ -1008,7 +1015,7 @@ async fn handle_actions<A: NetworkAddress + PtpTargetAddress>(
                 }
             }
             PortAction::SendGeneral { data, link_local } => {
-                general_socket
+                if let Err(e) = general_socket
                     .send_to(
                         data,
                         if link_local {
@@ -1018,7 +1025,9 @@ async fn handle_actions<A: NetworkAddress + PtpTargetAddress>(
                         },
                     )
                     .await
-                    .expect("Failed to send general message");
+                {
+                    log::warn!("Failed to send general message: {e}");
+                }
             }
             PortAction::ResetAnnounceTimer { duration } => {
                 timers.port_announce_timer.as_mut().reset(duration);
@@ -1062,7 +1071,7 @@ async fn handle_actions_ethernet(
                 link_local,
             } => {
                 // send timestamp of the send
-                let time = socket
+                let time = match socket
                     .send_to(
                         data,
                         EthernetAddress::new(
@@ -1080,7 +1089,14 @@ async fn handle_actions_ethernet(
                         ),
                     )
                     .await
-                    .expect("Failed to send event message");
+                {
+                    Ok(time) => time,
+                    // e.g. the interface is down: drop the message, the announce receipt timeout copes
+                    Err(e) => {
+                        log::warn!("Failed to send event message: {e}");
+                        continue;
+                    }
+                };
 
                 // anything we send later will have a later pending (send) timestamp
                 if let Some(time) = time {
@@ -1091,7 +1107,7 @@ async fn handle_actions_ethernet(
                 }
             }
             PortAction::SendGeneral { data, link_local } => {
-                socket
+                if let Err(e) = socket
                     .send_to(
                         data,
                         EthernetAddress::new(
@@ -1109,7 +1125,9 @@ async fn handle_actions_ethernet(
                         ),
                     )
                     .await
-                    .expect("Failed to send general message");
+                {
+                    log::warn!("Failed to send general message: {e}");
+                }
             }
             PortAction::ResetAnnounceTimer { duration } => {
                 timers.port_announce_timer.as_mut().reset(duration);
